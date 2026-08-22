@@ -1,0 +1,10 @@
+# Secrets / dane lokalne — NIE pushować
+config.json
+accounts.json
+
+# State runtime
+state.json
+*.log
+
+# Node
+node_modules/

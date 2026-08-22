@@ -1,0 +1,443 @@
+// engine.js — pętla handlowa jednego bota.
+// tick(): join assurance -> status turnieju -> portfolio/dane -> decyzja AI ->
+// egzekucja -> snapshot. Obsługa: lock "Portfolio is busy" (retry 1s), 429/401
+// (w api.js), weta bezpieczeństwa (w prompts.js), error recovery z backoffem.
+import { ApiError, AlreadyJoined, InsufficientFunds } from './api.js';
+import { buildSystemPrompt, buildUserPrompt, validateDecision } from './prompts.js';
+import { now, shuffle, sleep, toNumber } from './util.js';
+
+export class BotEngine {
+  constructor({ account, api, llm, store, cfg, botId }) {
+    this.account = account;
+    this.api = api;
+    this.llm = llm;
+    this.store = store;
+    this.cfg = cfg;
+    this.botId = botId ?? account.id;
+  }
+
+  log(level, msg) {
+    this.store.addLogEntry(this.botId, level, msg);
+  }
+
+  getState() {
+    return this.store.getBotState(this.botId);
+  }
+
+  // Dołączenie do turnieju: discovery (forceId | can_join), gate opłaty wpisowej,
+  // join z obsługą 409 (już zapisany -> player_id z /tournaments/{id}) i 402.
+  async ensureJoined() {
+    const account = this.account;
+    const state = this.getState();
+    if (account.player_id && account.tournament_id) return account.tournament_id;
+
+    let tournament = null;
+    const forced = this.cfg.tournament.forceId;
+    if (forced) {
+      tournament = (await this.api.getTournament(forced))?.tournament ?? null;
+      if (!tournament) {
+        this.log('warn', `forced tournament ${forced} not found`);
+        return null;
+      }
+    } else {
+      const list = await this.api.listTournaments();
+      const ts = list?.tournaments ?? [];
+      const pick = (s) => ts.find((t) => t.status === s && t.can_join);
+      const prefer = this.cfg.tournament.preferStatus;
+      const fallback = this.cfg.tournament.fallbackStatus;
+      tournament = pick(prefer) ?? pick(fallback) ?? ts.find((t) => t.can_join) ?? null;
+      if (!tournament) {
+        this.log('info', 'no joinable tournament, waiting');
+        state.status = 'waiting';
+        return null;
+      }
+    }
+
+    const meta = {
+      id: tournament.id,
+      name: tournament.name,
+      status: tournament.status,
+      is_paid: !!tournament.is_paid,
+      entry_fee: tournament.entry_fee,
+      max_leverage: tournament.max_leverage,
+      fee_percent: tournament.fee_percent,
+      lending_fee_daily_percent: tournament.lending_fee_daily_percent,
+      markets: tournament.markets ?? [],
+    };
+    state.tournament = meta;
+
+    if (tournament.is_paid) {
+      const fee = toNumber(tournament.entry_fee);
+      if (fee > this.cfg.tournament.maxEntryFeeUsd) {
+        this.log('warn', `entry fee ${fee} > max allowed ${this.cfg.tournament.maxEntryFeeUsd}, skipping`);
+        state.status = 'waiting';
+        return null;
+      }
+      const wallet = await this.api.getWallet();
+      const balance = toNumber(wallet?.wallet?.balance);
+      if (balance < fee) {
+        this.log('warn', `needs funding: wallet ${balance} USDT, entry fee ${fee} USDT`);
+        state.status = 'needs_funding';
+        return null;
+      }
+    }
+
+    try {
+      const res = await this.api.joinTournament(tournament.id);
+      account.player_id = res.player.id;
+      account.tournament_id = tournament.id;
+      this.store.upsertAccount(account);
+      state.status = 'running';
+      this.log('info', `joined tournament #${tournament.id} as player ${account.player_id}`);
+      return tournament.id;
+    } catch (e) {
+      if (e instanceof AlreadyJoined) {
+        const t = await this.api.getTournament(tournament.id);
+        const pid = t?.me?.player_id;
+        if (pid) {
+          account.player_id = pid;
+          account.tournament_id = tournament.id;
+          this.store.upsertAccount(account);
+          state.status = 'running';
+          this.log('info', `already joined as player ${pid}`);
+          return tournament.id;
+        }
+      }
+      if (e instanceof InsufficientFunds) {
+        this.log('warn', 'insufficient wallet funds to join');
+        state.status = 'needs_funding';
+        return null;
+      }
+      if (e instanceof ApiError && e.status === 422) {
+        // okno zapisów zamknięte / nie można teraz dołączyć — czekamy,
+        // nie wpadamy w error (np. forceId na turniej z miniętym join_until)
+        this.log('info', `join rejected (${e.message}), waiting`);
+        state.status = 'waiting';
+        return null;
+      }
+      throw e;
+    }
+  }
+
+  // Jedna iteracja pętli handlowej.
+  async tick() {
+    const account = this.account;
+    const state = this.getState();
+
+    // 1. Dołączenie — przy needs_funding / waiting bez player_id ponawiamy
+    // rzadziej (co fundingCheckTicks), żeby nie spamować serwera odrzuconymi joinami
+    if (!account.player_id) {
+      if (state.status === 'needs_funding' || state.status === 'waiting') {
+        state.funding_counter = (state.funding_counter ?? 0) + 1;
+        if (state.funding_counter % this.cfg.trading.fundingCheckTicks !== 0) return;
+      }
+      await this.ensureJoined();
+      if (!account.player_id) return;
+    }
+
+    // 2. Turniej: status + rynki (odświeżane co tick — bot musi wykryć start)
+    let tournament = state.tournament;
+    try {
+      const fresh = (await this.api.getTournament(account.tournament_id))?.tournament ?? null;
+      if (fresh) {
+        tournament = {
+          id: fresh.id,
+          name: fresh.name,
+          status: fresh.status,
+          is_paid: !!fresh.is_paid,
+          entry_fee: fresh.entry_fee,
+          max_leverage: fresh.max_leverage,
+          fee_percent: fresh.fee_percent,
+          lending_fee_daily_percent: fresh.lending_fee_daily_percent,
+          markets: fresh.markets ?? [],
+        };
+        state.tournament = tournament;
+      }
+    } catch (e) {
+      this.log('warn', `tournament refresh failed: ${e.message}`);
+    }
+    if (!tournament) {
+      this.log('warn', `tournament ${account.tournament_id} not found`);
+      return;
+    }
+    if (tournament.status !== 'running') {
+      if (state.status !== 'waiting') {
+        state.status = 'waiting';
+        this.log('info', `tournament ${tournament.status}, waiting for running`);
+      }
+      return;
+    }
+    if (state.status !== 'running') {
+      state.status = 'running';
+      this.log('info', 'tournament is running');
+    }
+
+    const markets = tournament.markets ?? [];
+    if (!markets.length) {
+      this.log('warn', 'tournament has no markets');
+      return;
+    }
+    // Plan handlowy bota: rynki ZALEŻĄ OD TURNIEJU — losowy subset z
+    // (config.symbols ∩ rynki turnieju), budżet = maxPositionAmountUsd * los(0.3..1).
+    // Plan przypisany raz na turniej, zapisany w stanie — stabilny między tickami.
+    let plan = state.trading_plan;
+    if (!plan || plan.tournament_id !== tournament.id) {
+      const pool = (this.cfg.trading.symbols.length ? this.cfg.trading.symbols : markets.map((m) => m.symbol))
+        .filter((s) => markets.some((m) => m.symbol === s));
+      const candidates = pool.length ? pool : markets.map((m) => m.symbol);
+      const n = Math.max(1, Math.min(this.cfg.trading.symbolsPerBot ?? 1, candidates.length));
+      const minFrac = this.cfg.trading.budgetMinFraction ?? 0.3;
+      const frac = minFrac + Math.random() * (1 - minFrac);
+      plan = {
+        tournament_id: tournament.id,
+        symbols: shuffle(candidates).slice(0, n),
+        maxPositionAmountUsd: Math.max(50, Math.round(this.cfg.trading.maxPositionAmountUsd * frac)),
+      };
+      state.trading_plan = plan;
+      this.log('info', `plan: ${plan.symbols.join(', ')}, budżet do ${plan.maxPositionAmountUsd} USDT`);
+    }
+    const symbols = plan.symbols;
+
+    // 3. Portfolio + transakcje (realized PnL z ledgera)
+    const port = await this.api.getPortfolio(account.player_id);
+    const tx = await this.api.getMyTransactions(account.player_id);
+    const realized = (tx?.transactions ?? [])
+      .filter((t) => t.type === 'close')
+      .reduce((s, t) => s + toNumber(t.pnl_realized), 0);
+    const portfolio = {
+      equity: port?.player?.equity ?? null,
+      cash_balance: port?.player?.cash_balance ?? null,
+      unrealized_pnl: port?.player?.unrealized_pnl ?? null,
+      realized_pnl: realized.toFixed(8),
+    };
+    state.portfolio = portfolio;
+    state.positions = port?.positions ?? [];
+
+    const myOrders = await this.api.getMyOrders(account.player_id);
+    state.pending_orders = (myOrders?.orders ?? [])
+      .filter((o) => o.status === 'pending')
+      .map((o) => ({ id: o.id, type: o.type, side: o.side, market_id: o.market_id, position_id: o.position_id, price: o.price, qty: o.qty }));
+
+    // 4. Dane rynkowe
+    const prices = {};
+    const candlesBySymbol = {};
+    for (const sym of symbols) {
+      try {
+        const p = await this.api.getPrice(sym);
+        prices[sym] = toNumber(p?.price);
+      } catch (e) {
+        this.log('warn', `no price for ${sym}: ${e.message}`);
+      }
+      try {
+        candlesBySymbol[sym] = (await this.api.getCandles(sym, this.cfg.trading.candlesInterval, this.cfg.trading.candlesLimit))?.candles ?? [];
+      } catch (e) {
+        this.log('warn', `no candles for ${sym}: ${e.message}`);
+      }
+    }
+    if (!Object.keys(prices).length) {
+      this.log('warn', 'no prices available, skipping tick');
+      return;
+    }
+
+    // 5. Ranking (player_id w rankingu to userId!)
+    try {
+      const rank = await this.api.getRanking(account.tournament_id);
+      const entry = (rank?.ranking ?? []).find((r) => r.player_id === account.user_id);
+      state.rank = entry?.rank ?? null;
+      state.players_count = (rank?.ranking ?? []).length || null;
+    } catch (e) {
+      this.log('warn', `ranking failed: ${e.message}`);
+    }
+
+    // 6. Decyzja AI + walidacja (AI widzi TYLKO rynki z planu bota,
+    // a budżet walidacji = budżet bota)
+    const effTrading = { ...this.cfg.trading, maxPositionAmountUsd: plan.maxPositionAmountUsd };
+    const ctx = {
+      markets: markets.filter((m) => symbols.includes(m.symbol)),
+      positions: state.positions,
+      pendingOrders: state.pending_orders,
+      portfolio,
+      prices,
+      tournament,
+      cfg: effTrading,
+    };
+    const system = buildSystemPrompt(tournament, { ...this.cfg, trading: effTrading });
+    const user = buildUserPrompt({
+      tournament,
+      portfolio,
+      positions: state.positions,
+      pendingOrders: state.pending_orders,
+      candlesBySymbol,
+      prices,
+      rank: state.rank,
+      playersCount: state.players_count,
+    });
+    const llmRes = await this.llm.decide({ system, user, ctx });
+    const v = validateDecision(llmRes.decision, ctx);
+    state.last_decision = {
+      action: v.decision.action,
+      ...(v.error ? { error: v.error } : {}),
+      raw: typeof llmRes.raw === 'string' ? llmRes.raw.slice(0, 400) : null,
+      at: now(),
+    };
+    if (!v.ok) this.log('warn', `decision invalid: ${v.error}`);
+    else if (v.decision.action !== 'hold') this.log('info', `decision: ${JSON.stringify(v.decision)}`);
+
+    // 7. Egzekucja
+    if (v.decision.action !== 'hold') {
+      await this.executeDecision(v.decision, ctx);
+    }
+
+    state.last_tick = now();
+    state.last_error = null;
+  }
+
+  async executeDecision(decision, ctx) {
+    const playerId = this.account.player_id;
+    try {
+      if (decision.action === 'open') {
+        const market = ctx.markets.find((m) => m.symbol === decision.market_symbol);
+        if (!market) {
+          this.log('warn', `open: market ${decision.market_symbol} unknown`);
+          return;
+        }
+        const res = await this.withBusyRetry(() =>
+          this.api.createOrder(playerId, {
+            market_id: market.id,
+            side: decision.side,
+            type: 'market',
+            amount_usd: decision.amount_usd,
+            leverage: decision.leverage,
+          }),
+        );
+        const positionId = res?.order?.position_id;
+        this.log('info', `opened ${decision.side} ${decision.market_symbol} ${decision.amount_usd} USDT x${decision.leverage} -> pos ${positionId ?? '?'}`);
+        if (positionId && (decision.tp_price != null || decision.sl_price != null)) {
+          const stops = [];
+          if (decision.tp_price != null) stops.push({ type: 'tp', price: decision.tp_price });
+          if (decision.sl_price != null) stops.push({ type: 'sl', price: decision.sl_price });
+          for (const s of stops) {
+            try {
+              await this.withBusyRetry(() =>
+                this.api.createOrder(playerId, {
+                  market_id: market.id,
+                  side: decision.side,
+                  type: s.type,
+                  price: s.price,
+                  position_id: positionId,
+                }),
+              );
+              this.log('info', `${s.type} ${s.price} set for pos ${positionId}`);
+            } catch (e) {
+              this.log('warn', `${s.type} failed: ${e.message}`);
+            }
+          }
+        }
+      } else if (decision.action === 'close') {
+        const res = await this.withBusyRetry(() => this.api.closePosition(playerId, decision.position_id));
+        this.log('info', `closed pos ${decision.position_id}, realized pnl ${res?.position?.realized_pnl}`);
+      } else if (decision.action === 'set_tp_sl') {
+        const pos = ctx.positions.find((p) => p.id === decision.position_id);
+        const market = pos && ctx.markets.find((m) => m.id === pos.market_id);
+        if (!market) {
+          this.log('warn', `set_tp_sl: position ${decision.position_id} market unknown`);
+          return;
+        }
+        const orders = (await this.api.getMyOrders(playerId))?.orders ?? [];
+        for (const o of orders) {
+          if (o.status === 'pending' && o.position_id === decision.position_id && (o.type === 'tp' || o.type === 'sl')) {
+            try {
+              await this.withBusyRetry(() => this.api.cancelOrder(o.id));
+              this.log('info', `cancelled old ${o.type} #${o.id}`);
+            } catch (e) {
+              this.log('warn', `cancel #${o.id} failed: ${e.message}`);
+            }
+          }
+        }
+        const stops = [];
+        if (decision.tp_price != null) stops.push({ type: 'tp', price: decision.tp_price });
+        if (decision.sl_price != null) stops.push({ type: 'sl', price: decision.sl_price });
+        for (const s of stops) {
+          try {
+            await this.withBusyRetry(() =>
+              this.api.createOrder(playerId, {
+                market_id: market.id,
+                side: pos.side,
+                type: s.type,
+                price: s.price,
+                position_id: decision.position_id,
+              }),
+            );
+            this.log('info', `${s.type} ${s.price} set for pos ${decision.position_id}`);
+          } catch (e) {
+            this.log('warn', `${s.type} failed: ${e.message}`);
+          }
+        }
+      }
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 422 && /insufficient/i.test(e.message)) {
+        this.log('warn', `trade rejected: ${e.message}`);
+        return;
+      }
+      if (e instanceof ApiError && e.status === 403) {
+        this.log('error', '403: wrong player_id? check account');
+        return;
+      }
+      throw e;
+    }
+  }
+
+  // Lock antirace: "Portfolio is busy, try again." -> sleep 1s i ponów.
+  async withBusyRetry(fn) {
+    for (let i = 0; i < this.cfg.trading.portfolioBusyRetries; i++) {
+      try {
+        return await fn();
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 422 && /busy/i.test(e.message)) {
+          if (i > 0) this.log('debug', `portfolio busy, retry ${i}`);
+          await sleep(1000);
+          continue;
+        }
+        throw e;
+      }
+    }
+    throw new ApiError(422, { message: 'Portfolio is busy, try again.' });
+  }
+}
+
+// Async runner: pętla tick -> sleep(interval). Abort (pause/delete) kończy
+// natychmiast (sleep jest przerywalny). Po maxTickFailures -> status error
+// i backoff 2^k*5s (max 5 min); sukces resetuje licznik.
+export async function runBotLoop(botId, deps, controller) {
+  const { account, api, llm, store, cfg } = deps;
+  const engine = new BotEngine({ account, api, llm, store, cfg, botId });
+  const signal = controller.signal;
+  let failures = 0;
+
+  while (!signal.aborted) {
+    try {
+      await engine.tick();
+      failures = 0;
+      const s = store.getBotState(botId);
+      if (s.status === 'error') {
+        s.status = 'running';
+        s.last_error = null;
+        store.addLogEntry(botId, 'info', 'recovered');
+      }
+    } catch (e) {
+      if (e.code === 'ABORTED') break;
+      failures++;
+      const s = store.getBotState(botId);
+      s.last_error = e.message;
+      store.addLogEntry(botId, 'error', `tick failed: ${e.message}`);
+      if (failures >= cfg.trading.maxTickFailures) {
+        s.status = 'error';
+        const delay = Math.min(5000 * 2 ** Math.max(0, failures - cfg.trading.maxTickFailures), 300000);
+        store.addLogEntry(botId, 'warn', `too many failures, backoff ${Math.round(delay / 1000)}s`);
+        await sleep(delay, signal);
+        continue;
+      }
+    }
+    await sleep(cfg.trading.intervalMs, signal);
+  }
+}

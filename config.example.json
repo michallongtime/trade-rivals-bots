@@ -1,0 +1,40 @@
+{
+  "api": {
+    "baseUrl": "http://localhost:8080/api"
+  },
+  "ai": {
+    "provider": "mock",
+    "baseURL": "https://api.deepseek.com/v1",
+    "apiKey": "",
+    "model": "deepseek-chat",
+    "temperature": 0.4
+  },
+  "account": {
+    "nicknamePrefix": "bot",
+    "emailDomain": "tradebot.local",
+    "password": "DefaultPass123!",
+    "count": 0,
+    "nicknameMode": "realistic",
+    "nameStyle": "mixed",
+    "emailDomains": ["trade-strategy.com"]
+  },
+  "tournament": {
+    "preferStatus": "registration_open",
+    "fallbackStatus": "running",
+    "maxEntryFeeUsd": 50
+  },
+  "trading": {
+    "intervalMs": 45000,
+    "symbols": ["BTCUSDT", "ETHUSDT"],
+    "symbolsPerBot": 1,
+    "budgetMinFraction": 0.3,
+    "maxPositionAmountUsd": 1000,
+    "maxEquityFraction": 0.5,
+    "maxOpenPositions": 3,
+    "maxLeverage": 10
+  },
+  "server": {
+    "host": "127.0.0.1",
+    "port": 3000
+  }
+}
