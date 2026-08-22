@@ -16,6 +16,7 @@ import { BotManager } from '../src/manager.js';
 import { BotEngine } from '../src/engine.js';
 import { generateNickname, generateEmail, transliterate } from '../src/names.js';
 import { loadConfig } from '../src/config.js';
+import { loadTargets, listTargets, resolveTargetName, applyTargetOverrides } from '../src/targets.js';
 import { startStub } from './stub-server.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -290,6 +291,37 @@ console.log('\nE. 429 backoff i 401 re-login:');
   ok('backoff (Retry-After 1s) realnie czeka', () => assert.ok(Date.now() - t0 >= 900, `zajęło ${Date.now() - t0}ms`));
   ok('token odświeżony po 401', () => assert.strictEqual(client.account.token, 'tok-2'));
   srv.close();
+}
+
+// ============ F. Targety (cel serwera) ============
+console.log('\nF. Targety:');
+{
+  const t = loadTargets();
+  ok('targets.json: default = local, są local+prod', () => {
+    assert.strictEqual(t.default, 'local');
+    assert.ok(t.targets.local && t.targets.prod);
+  });
+  ok('listTargets pokazuje baseUrl', () => {
+    const l = listTargets(t);
+    assert.ok(l.some((e) => e.name === 'local' && e.baseUrl === 'http://localhost:8080/api'));
+  });
+  ok('resolveTargetName: znany target', () => assert.strictEqual(resolveTargetName('prod', t, 'local'), 'prod'));
+  ok('resolveTargetName: brak flagi -> default', () => assert.strictEqual(resolveTargetName(null, t, 'local'), 'local'));
+  ok('resolveTargetName: nieznany -> błąd z listą', () => {
+    assert.throws(() => resolveTargetName('nope', t, 'local'), /nieznany target/);
+  });
+  const cfgT = loadConfig();
+  applyTargetOverrides(cfgT, t.targets.prod);
+  ok('nadpisania targetu wygrywają z config.json', () => assert.strictEqual(cfgT.api.baseUrl, t.targets.prod.api.baseUrl));
+  const d = mkdtempSync(join(tmpdir(), 'tcbot-tgt-'));
+  const sLocal = new Store({ dataDir: join(d, 'local') });
+  const sProd = new Store({ dataDir: join(d, 'prod') });
+  sLocal.upsertAccount({ id: 'b-1', nickname: 'x', email: 'x@y.z', password: 'p', token: 't', user_id: 1, player_id: 2, tournament_id: 7, created_at: 'now' });
+  ok('konto targetu nie wycieka do innego targetu', () => {
+    assert.strictEqual(sLocal.getAccount('b-1').token, 't');
+    assert.strictEqual(sProd.getAccount('b-1'), undefined);
+  });
+  rmSync(d, { recursive: true, force: true });
 }
 
 // ============ cleanup ============

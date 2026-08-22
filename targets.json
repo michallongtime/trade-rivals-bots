@@ -1,0 +1,11 @@
+{
+  "default": "local",
+  "targets": {
+    "local": {
+      "api": { "baseUrl": "http://localhost:8080/api" }
+    },
+    "prod": {
+      "api": { "baseUrl": "https://TU-PODAJ-DOMENE-PRODUKCYJNA/api" }
+    }
+  }
+}

@@ -71,6 +71,7 @@
 <header>
   <h1>🤖 TradeContest Bot</h1>
   <span class="badge" id="bMode">–</span>
+  <span class="badge" title="docelowy serwer (target)">🎯 <span id="bTarget">–</span></span>
   <span class="badge">AI: <span id="bAi">–</span></span>
   <span class="badge">API: <span id="bApi">–</span></span>
   <span class="badge">uptime <span id="bUp">–</span></span>
@@ -150,6 +151,7 @@ async function load() {
   }
   $('bMode').textContent = status.mode.toUpperCase();
   $('bMode').className = 'badge ' + (status.mode === 'live' ? 'live' : 'warn');
+  $('bTarget').textContent = status.target ?? 'default';
   $('bAi').textContent = `${status.aiProvider}${status.aiModel ? ' / ' + status.aiModel : ''}`;
   $('bApi').textContent = status.baseUrl;
   const u = status.uptimeSec;

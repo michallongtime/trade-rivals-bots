@@ -6,5 +6,8 @@ accounts.json
 state.json
 *.log
 
+# Dane per-target (accounts + state)
+data/
+
 # Node
 node_modules/

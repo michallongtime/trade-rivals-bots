@@ -47,7 +47,7 @@ function collectBody(req) {
   });
 }
 
-export function createServer({ manager, store, cfg, offline, dryRun, startedAt }) {
+export function createServer({ manager, store, cfg, offline, dryRun, startedAt, targetName }) {
   return http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, `http://${req.headers.host ?? 'localhost'}`);
@@ -66,6 +66,7 @@ export function createServer({ manager, store, cfg, offline, dryRun, startedAt }
         for (const b of bots) totals[b.status] = (totals[b.status] ?? 0) + 1;
         sendJson(res, 200, {
           uptimeSec: Math.floor((Date.now() - startedAt) / 1000),
+          target: targetName ?? null,
           mode: offline ? 'offline' : dryRun ? 'dry-run' : 'live',
           aiProvider: cfg.ai.provider,
           aiModel: cfg.ai.model,

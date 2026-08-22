@@ -75,17 +75,18 @@ export function loadConfig(configPath = null) {
 }
 
 export function parseArgs(argv) {
-  const args = { offline: false, dryRun: false, config: null };
+  const args = { offline: false, dryRun: false, config: null, target: null };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--offline') args.offline = true;
     else if (a === '--dry-run') args.dryRun = true;
     else if (a === '--config' && argv[i + 1]) args.config = argv[++i];
+    else if (a === '--target' && argv[i + 1]) args.target = argv[++i];
   }
   return args;
 }
 
-function deepMerge(target, ...sources) {
+export function deepMerge(target, ...sources) {
   for (const src of sources) {
     if (!src || typeof src !== 'object') continue;
     for (const [k, v] of Object.entries(src)) {

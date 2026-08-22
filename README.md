@@ -17,10 +17,36 @@ Nie potrzebuje żadnego serwera — działa jako jeden lokalny proces: silnik bo
 ## Start
 
 ```bash
-npm start              # tryb live
+npm start              # tryb live; bez --target zapyta o cel serwera
+npm run start:local    # od razu cel „local" (http://localhost:8080/api)
+npm run start:prod     # od razu cel „prod" (produkcja)
 npm start -- --dry-run # odczyty live, zlecenia tylko logowane (bezpieczny test)
 npm start -- --offline # pełny tryb testowy bez sieci (symulator w pamięci)
 ```
+
+## Cel serwera (targety)
+
+`targets.json` definiuje nazwane cele — serwery, na których grają boty. Każdy
+cel to nadpisania configu (głównie `api.baseUrl`) nakładane **po** `config.json`
+(cel wygrywa) oraz **osobny katalog danych** `data/<target>/` z `accounts.json`
+i `state.json`. Tokeny i `player_id` są specyficzne dla serwera — oddzielne
+pliki zapobiegają mieszaniu kont locala z produkcją.
+
+```jsonc
+{
+  "default": "local",              // używane przy Enter / braku terminala
+  "targets": {
+    "local": { "api": { "baseUrl": "http://localhost:8080/api" } },
+    "prod":   { "api": { "baseUrl": "https://twoja-domena/api" } }
+  }
+}
+```
+
+- `npm start` bez flagi → w terminalu pojawia się lista targetów (15 s na
+  wybór, Enter = `default`; poza terminalem od razu default),
+- `--target <nazwa>` (lub `npm run start:local` / `start:prod`) pomija prompt;
+  nieznana nazwa kończy się błędem z listą dostępnych,
+- dashboard pokazuje aktywny cel jako badge **🎯**.
 
 Po starcie otwórz **http://127.0.0.1:3000** — dashboard:
 
@@ -114,9 +140,11 @@ serwera ani sieci.
 ## Pliki
 
 ```
-src/main.js      entrypoint (flagi --offline / --dry-run / --config <plik>)
+src/main.js      entrypoint (flagi --offline / --dry-run / --config / --target)
 src/config.js    domyślna konfiguracja + merge z config.json
+src/targets.js   targety z targets.json: rezolucja, nadpisania, data/<target>
 src/store.js     accounts.json (konta+tokeny) i state.json (snapshoty botów), zapis atomic
+targets.json     cele serwera: local / prod (+ własne dane per cel)
 src/api.js       klient HTTP: throttle (10/min, 20/min, 30/min), backoff 429, re-login 401
 src/llm.js       klient OpenAI-compatible (OpenAI/DeepSeek/custom/mock)
 src/prompts.js   builder promptu + walidacja decyzji AI (weta bezpieczeństwa)

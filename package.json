@@ -9,6 +9,8 @@
   },
   "scripts": {
     "start": "node src/main.js",
+    "start:local": "node src/main.js --target local",
+    "start:prod": "node src/main.js --target prod",
     "stub": "node test/stub-server.js",
     "test": "node test/smoke.js"
   }

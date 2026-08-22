@@ -2,15 +2,14 @@ import { join } from 'node:path';
 import { loadJsonFile, atomicWriteJson, now } from './util.js';
 import { ROOT } from './config.js';
 
-const ACCOUNTS_FILE = join(ROOT, 'accounts.json');
-const STATE_FILE = join(ROOT, 'state.json');
-
 // accounts.json  — tożsamości kont (nickname/email/password/token) + player_id
 // state.json     — live snapshoty botów (equity, pozycje, rank, log, status)
+// dataDir: katalog per target (data/<target>) z oboma plikami; bez niego legacy (ROOT).
 export class Store {
-  constructor({ accountsFile = ACCOUNTS_FILE, stateFile = STATE_FILE } = {}) {
-    this.accountsFile = accountsFile;
-    this.stateFile = stateFile;
+  constructor({ dataDir = ROOT, accountsFile = null, stateFile = null } = {}) {
+    if (dataDir == null) dataDir = ROOT; // null nie aktywuje defaulta destrukturyzacji
+    this.accountsFile = accountsFile ?? join(dataDir, 'accounts.json');
+    this.stateFile = stateFile ?? join(dataDir, 'state.json');
     this.accounts = loadJsonFile(accountsFile, { version: 1, accounts: [] });
     this.state = loadJsonFile(stateFile, { version: 1, bots: {} });
   }
