@@ -5,7 +5,7 @@
       "api": { "baseUrl": "http://localhost:8080/api" }
     },
     "prod": {
-      "api": { "baseUrl": "https://TU-PODAJ-DOMENE-PRODUKCYJNA/api" }
+      "api": { "baseUrl": "https://trade-rivals.com/api" }
     }
   }
 }
