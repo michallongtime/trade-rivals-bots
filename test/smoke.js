@@ -51,6 +51,8 @@ const cfg = loadConfig();
 cfg.account.count = 0;
 cfg.trading.intervalMs = 2000;
 cfg.trading.minOrderSpacingMs = 400;
+cfg.trading.idleChancePerTick = 0; // kamuflaż wyłączony w testach — deterministyczne czasy
+cfg.trading.tickJitterFraction = 0;
 
 // ============ A. Store ============
 console.log('A. Store:');

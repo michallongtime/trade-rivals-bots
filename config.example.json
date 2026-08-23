@@ -26,9 +26,9 @@
   "trading": {
     "intervalMs": 45000,
     "tickJitterFraction": 0.5,
-    "idleChancePerTick": 0.1,
-    "idleMinMs": 300000,
-    "idleMaxMs": 2400000,
+    "idleChancePerTick": 0.15,
+    "idleMinMs": 600000,
+    "idleMaxMs": 5400000,
     "symbols": ["BTCUSDT", "ETHUSDT"],
     "symbolsPerBot": 1,
     "budgetMinFraction": 0.3,
