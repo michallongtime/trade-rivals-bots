@@ -20,6 +20,7 @@ import { loadTargets, listTargets, resolveTargetName, applyTargetOverrides } fro
 import { startStub } from './stub-server.js';
 import { createAuthGuard, assertAuthConfig, parseBasic } from '../src/auth.js';
 import { createServer } from '../src/server.js';
+import { seededRandom, randBetween } from '../src/util.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let passed = 0;
@@ -447,6 +448,39 @@ console.log('\nG. Autoryzacja (Basic + X-Auth-Token + lockout):');
     assert.strictEqual(stillLocked.status, 429, 'zablokowany IP dostaje 429 nawet z poprawnymi danymi');
 
     srv.close();
+  });
+}
+
+// ============ H. Kamuflaż aktywności (seeded PRNG, jitter, idle) ============
+console.log('\nH. Kamuflaż aktywności:');
+{
+  ok('seededRandom: deterministyczny dla tego samego id', () => {
+    const a = Array.from({ length: 10 }, () => seededRandom('b-abc')());
+    const b = Array.from({ length: 10 }, () => seededRandom('b-abc')());
+    assert.deepStrictEqual(a, b);
+  });
+  ok('seededRandom: różne id -> różne sekwencje', () => {
+    assert.notStrictEqual(seededRandom('b-abc')(), seededRandom('b-xyz')());
+  });
+  ok('randBetween: wartości w zakresie', () => {
+    const rng = seededRandom('b-test');
+    for (let i = 0; i < 100; i++) {
+      const v = randBetween(rng, 300000, 2400000);
+      assert.ok(v >= 300000 && v <= 2400000, `v=${v}`);
+    }
+  });
+  ok('profil per bot: base w 70-130% intervalMs', () => {
+    const rng = seededRandom('b-profil');
+    const base = Math.round(45000 * (0.7 + 0.6 * rng()));
+    assert.ok(base >= 31500 && base <= 58500, `base=${base}`);
+  });
+  ok('jitter: odstęp w zakresie base*(1±0.5)', () => {
+    const rng = seededRandom('b-jitter');
+    for (let i = 0; i < 100; i++) {
+      const j = 1 + (rng() * 2 - 1) * 0.5;
+      const wait = Math.max(5000, Math.round(45000 * j));
+      assert.ok(wait >= 22500 && wait <= 67500, `wait=${wait}`);
+    }
   });
 }
 

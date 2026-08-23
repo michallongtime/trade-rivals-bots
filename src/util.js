@@ -69,3 +69,25 @@ export function shuffle(arr) {
   }
   return a;
 }
+
+// Deterministyczny PRNG (mulberry32) z seedu ze stringa — stabilny profil
+// per bot (np. tempo ticków, przerwy offline) między restartami.
+export function seededRandom(str) {
+  let h = 2166136261;
+  for (const ch of String(str)) {
+    h ^= ch.charCodeAt(0);
+    h = Math.imul(h, 16777619);
+  }
+  let a = h >>> 0;
+  return function () {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+export function randBetween(rng, min, max) {
+  return min + rng() * (max - min);
+}

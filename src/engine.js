@@ -4,7 +4,7 @@
 // (w api.js), weta bezpieczeństwa (w prompts.js), error recovery z backoffem.
 import { ApiError, AlreadyJoined, InsufficientFunds } from './api.js';
 import { buildSystemPrompt, buildUserPrompt, validateDecision } from './prompts.js';
-import { now, shuffle, sleep, toNumber } from './util.js';
+import { now, randBetween, seededRandom, shuffle, sleep, toNumber } from './util.js';
 
 export class BotEngine {
   constructor({ account, api, llm, store, cfg, botId }) {
@@ -428,6 +428,16 @@ export async function runBotLoop(botId, deps, controller) {
   const signal = controller.signal;
   let failures = 0;
 
+  // Kamuflaż aktywności: stabilny profil per bot (seed z id) — własne tempo
+  // ticków + jitter, a czasem przerwa offline (zero zapytań), żeby na aplikacji
+  // nie wisiała zawsze ta sama grupa użytkowników online.
+  const rng = seededRandom(botId);
+  const base = Math.round(cfg.trading.intervalMs * (0.7 + 0.6 * rng()));
+  const jitter = cfg.trading.tickJitterFraction ?? 0;
+  const idleChance = cfg.trading.idleChancePerTick ?? 0;
+  const idleMin = cfg.trading.idleMinMs ?? 0;
+  const idleMax = cfg.trading.idleMaxMs ?? 0;
+
   while (!signal.aborted) {
     try {
       await engine.tick();
@@ -452,6 +462,14 @@ export async function runBotLoop(botId, deps, controller) {
         continue;
       }
     }
-    await sleep(cfg.trading.intervalMs, signal);
+    // Odstęp z jitterem (losowy, per tick)
+    const j = 1 + (rng() * 2 - 1) * jitter;
+    await sleep(Math.max(5000, Math.round(base * j)), signal);
+    // Czasem przerwa offline — bot "znika" na 5-40 min (żadnych zapytań API)
+    if (idleChance > 0 && idleMax > idleMin && rng() < idleChance) {
+      const idleMs = Math.round(randBetween(rng, idleMin, idleMax));
+      store.addLogEntry(botId, 'info', `idle (human-like), resume in ${Math.round(idleMs / 60000)} min`);
+      await sleep(idleMs, signal);
+    }
   }
 }
