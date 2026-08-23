@@ -73,6 +73,13 @@ export class Store {
     delete this.state.bots[id];
   }
 
+  // Globalna liczba zapytań AI (suma liczników per bot).
+  aiRequestsTotal() {
+    let total = 0;
+    for (const s of Object.values(this.state.bots)) total += s.ai_requests ?? 0;
+    return total;
+  }
+
   addLogEntry(id, level, msg) {
     const s = this.getBotState(id);
     s.log.push({ ts: now(), level, msg });
@@ -92,6 +99,7 @@ export class Store {
         status: s.status,
         last_tick: s.last_tick,
         last_error: s.last_error,
+        aiRequests: s.ai_requests ?? 0,
         tournament: primary
           ? { id: primary.id, name: primary.name, status: primary.status, is_paid: primary.is_paid }
           : s.tournament ? { id: s.tournament.id, name: s.tournament.name, status: s.tournament.status, is_paid: s.tournament.is_paid } : null,

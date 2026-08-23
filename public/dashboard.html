@@ -73,6 +73,7 @@
   <span class="badge" id="bMode">–</span>
   <span class="badge" title="docelowy serwer (target)">🎯 <span id="bTarget">–</span></span>
   <span class="badge">AI: <span id="bAi">–</span></span>
+  <span class="badge" title="wygenerowane zapytania AI (łącznie, wszystkie boty)">🤖 <span id="bAiCount">0</span> zapytań</span>
   <span class="badge">API: <span id="bApi">–</span></span>
   <span class="badge">uptime <span id="bUp">–</span></span>
   <button class="ghost mini" id="logoutBtn" hidden>Wyloguj</button>
@@ -105,7 +106,7 @@
   <thead>
     <tr>
       <th>Bot</th><th>Status</th><th>Equity</th><th>Realiz. PnL</th><th>Niezrealiz.</th>
-      <th>Rank</th><th>Pozycje</th><th>Turnieje</th><th>Ostatnia decyzja</th><th>Ostatni błąd</th><th>Akcje</th>
+      <th>Rank</th><th>Pozycje</th><th>Turnieje</th><th>AI</th><th>Ostatnia decyzja</th><th>Ostatni błąd</th><th>Akcje</th>
     </tr>
   </thead>
   <tbody id="rows"></tbody>
@@ -204,6 +205,7 @@ async function load() {
   $('bMode').className = 'badge ' + (status.mode === 'live' ? 'live' : 'warn');
   $('bTarget').textContent = status.target ?? 'default';
   $('bAi').textContent = `${status.aiProvider}${status.aiModel ? ' / ' + status.aiModel : ''}`;
+  $('bAiCount').textContent = status.aiRequestsTotal ?? 0;
   $('bApi').textContent = status.baseUrl;
   const u = status.uptimeSec;
   $('bUp').textContent = `${Math.floor(u / 3600)}h ${Math.floor((u % 3600) / 60)}m ${u % 60}s`;
@@ -243,6 +245,7 @@ function rowHtml(b) {
     <td>${b.rank != null ? `${b.rank}/${b.players_count ?? '?'}` : '–'}</td>
     <td>${pnls}</td>
     <td title="${tj.length ? tj.map((t) => esc(t.name ?? '#' + t.id)).join('; ') : ''}">🏆 ${tj.length}</td>
+    <td title="wygenerowane zapytania AI">🤖 ${b.aiRequests ?? 0}</td>
     <td class="muted" style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(dec)}">${esc(dec)}</td>
     <td><span class="err" title="${esc(b.last_error ?? '')}">${esc(b.last_error ?? '')}</span></td>
     <td><div class="actions" onclick="event.stopPropagation()">${actions}<button class="mini ghost" onclick="openLog('${b.id}', '${esc(b.nickname)}')" title="Log">📜</button><button class="mini danger" onclick="evDelete('${b.id}', event)">🗑</button></div></td>
@@ -289,7 +292,45 @@ function detailsRow(b) {
   return `<tr><td colspan="11" style="padding:8px 12px;background:#1b1f2b">
     <div class="muted" style="margin-bottom:8px">🏆 Turnieje (${tours.length})</div>
     <div style="display:flex;gap:24px;flex-wrap:wrap">${blocks}</div>
+    <div style="margin-top:14px">
+      <div class="muted" style="margin-bottom:6px">🤖 Zapytania AI (${b.aiRequests ?? 0}) <button class="mini ghost" onclick="loadAi('${b.id}')">${aiCache[b.id] ? 'odśwież' : 'pokaż'}</button></div>
+      <div id="ai-${b.id}">${aiCacheHtml(b)}</div>
+    </div>
   </td></tr>`;
+}
+
+// Podgląd wymian AI: cache w pamięci (payload ładowany na żądanie przez
+// /api/bots/:id/ai), otwarte <details> pamiętane między odświeżeniami load().
+const aiCache = {};
+const aiOpen = {};
+const AI_PRE = 'white-space:pre-wrap;font:11px/1.5 ui-monospace,Consolas,monospace;background:#0b0d12;border:1px solid var(--border);border-radius:6px;padding:8px;max-height:240px;overflow:auto';
+function aiCacheHtml(b) {
+  const cached = aiCache[b.id];
+  if (!cached || !cached.length) return '<span class="muted">kliknij „pokaż", aby zobaczyć ostatnie zapytania i odpowiedzi AI</span>';
+  const openSet = aiOpen[b.id] ??= new Set();
+  return cached.map((x, i) => `<details ${openSet.has(i) ? 'open' : ''} style="margin-bottom:6px">
+    <summary onclick="toggleAiOpen('${b.id}', ${i}, event)" style="cursor:pointer">${esc((x.at ?? '').slice(11, 19))} · 🏆 ${esc(x.tournament_name ?? '#' + x.tournament_id)} · ${esc((x.response ?? '').slice(0, 90))}</summary>
+    <div style="margin-top:6px">
+      <div class="muted" style="margin-bottom:2px">SYSTEM:</div>
+      <pre style="${AI_PRE}">${esc(x.system ?? '')}</pre>
+      <div class="muted" style="margin-top:8px;margin-bottom:2px">USER:</div>
+      <pre style="${AI_PRE}">${esc(x.user ?? '')}</pre>
+      <div class="muted" style="margin-top:8px;margin-bottom:2px">ODPOWIEDŹ:</div>
+      <pre style="${AI_PRE}">${esc(x.response ?? '')}</pre>
+    </div>
+  </details>`).join('');
+}
+function toggleAiOpen(id, i, e) {
+  e.preventDefault();
+  const s = aiOpen[id] ??= new Set();
+  if (s.has(i)) s.delete(i); else s.add(i);
+  load();
+}
+async function loadAi(id) {
+  try {
+    aiCache[id] = (await api(`/api/bots/${id}/ai`)).exchanges ?? [];
+  } catch { /* 401/429 obsłużone w api() */ }
+  load();
 }
 
 // Kolory statusów turnieju (mapowane na istniejące klasy botów).

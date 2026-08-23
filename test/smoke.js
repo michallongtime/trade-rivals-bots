@@ -163,6 +163,18 @@ let managerOffline = null;
   ok('boty dołączyły i mają portfolio', () => views.length === 2 && views.every((b) => b.portfolio && b.status === 'running'));
   ok('historia dołączonych turniejów w widoku bota', () =>
     views.every((b) => (b.joinedTournaments ?? []).some((t) => t.id === 7 && t.name && t.joined_at)));
+  ok('licznik zapytań AI per bot > 0', () => views.every((b) => (b.aiRequests ?? 0) > 0));
+  ok('wymiany AI zapisane (prompt + odpowiedź)', () => {
+    const st = store.getBotState(Object.keys(store.state.bots)[0]);
+    return (
+      Array.isArray(st.ai_exchanges) &&
+      st.ai_exchanges.length > 0 &&
+      typeof st.ai_exchanges[0].system === 'string' &&
+      st.ai_exchanges[0].user &&
+      st.ai_exchanges[0].response != null &&
+      st.ai_exchanges[0].tournament_id === 7
+    );
+  });
   ok('boty handlują (otwarte pozycje)', () => views.some((b) => b.positions.length > 0));
   ok('plan per bot: rynki z turnieju, zróżnicowane budżety', () =>
     views.every((b) => {
@@ -425,7 +437,7 @@ console.log('\nG. Autoryzacja (Basic + X-Auth-Token + lockout):');
 
   // --- integracja: prawdziwy createServer (port 0) ---
   okAsync('HTTP: health publiczne, status 401/200, lockout po 2 błędach', async () => {
-    const store = { botViews: () => [], accounts: { accounts: [] }, getAccount: () => undefined, getBotState: () => ({ log: [] }) };
+    const store = { botViews: () => [], accounts: { accounts: [] }, getAccount: () => undefined, getBotState: () => ({ log: [] }), aiRequestsTotal: () => 0 };
     const manager = { registrationQueueLen: () => 0 };
     const cfgG = loadConfig();
     cfgG.server = { host: '127.0.0.1', port: 0, auth: { user: 'admin', pass: 'pass', token: 'tok', maxAttempts: 2, lockMs: 60000 } };

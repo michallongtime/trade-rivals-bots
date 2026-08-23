@@ -94,6 +94,7 @@ export function createServer({ manager, store, cfg, offline, dryRun, startedAt, 
           baseUrl: cfg.api.baseUrl,
           totals,
           registrationQueueLen: manager.registrationQueueLen(),
+          aiRequestsTotal: store.aiRequestsTotal(),
         });
         return;
       }
@@ -136,6 +137,15 @@ export function createServer({ manager, store, cfg, offline, dryRun, startedAt, 
       if (m === 'GET' && logMatch) {
         const s = store.getBotState(logMatch[1]);
         return sendJson(res, 200, { log: s.log ?? [] });
+      }
+
+      // Ostatnie wymiany AI (pełny prompt + odpowiedź) — na żądanie, bo payload
+      // jest duży; dashboard nie polluje tego co 3 s.
+      const aiMatch = p.match(/^\/api\/bots\/([^/]+)\/ai$/);
+      if (m === 'GET' && aiMatch) {
+        const s = store.getBotState(aiMatch[1]);
+        const exchanges = s.ai_exchanges ?? [];
+        return sendJson(res, 200, { exchanges: exchanges.slice(-10).reverse() });
       }
 
       sendJson(res, 404, { error: 'Not found' });
