@@ -107,11 +107,12 @@ export class Store {
 
   // Wszystkie stany botów do dashboardu (bez internalnych pól).
   // Z multi-turniejami: tournaments = stany per turniej; pola "pierwotne"
-  // (portfolio/positions/rank/...) pokazują PIERWSZY turniej bota.
+  // (portfolio/positions/rank/...) pokazują TRWAJĄCY turniej bota (running —
+  // tam jest aktywne granie), a gdy żaden nie gra — pierwszy z listy.
   botViews() {
     return Object.values(this.state.bots).map((s) => {
       const tlist = Object.values(s.tournaments ?? {});
-      const primary = tlist[0] ?? null;
+      const primary = tlist.find((t) => t.status === 'running') ?? tlist[0] ?? null;
       return {
         id: s.id,
         status: s.status,
