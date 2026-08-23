@@ -305,7 +305,18 @@ export class BotEngine {
     }
 
     // 6. Decyzja AI + walidacja (AI widzi TYLKO rynki z planu bota,
-    // a budżet walidacji = budżet bota)
+    // a budżet walidacji = budżet bota). Ustawienia z dashboardu:
+    //   - aiInstruction: instrukcja operatora doklejana do promptu systemowego,
+    //   - aiAskIntervalMin: cooldown — bot pyta AI najwyżej co X minut.
+    // Ustawienia żyją na top-levelu store (state.meta) — nie w stanie bota!
+    const settings = this.store.getSettings();
+    const instruction = settings.aiInstruction ?? '';
+    const askIntervalMin = settings.aiAskIntervalMin ?? 0;
+    const nowMs = Date.now();
+    if (askIntervalMin > 0 && state.nextAiAt && nowMs < state.nextAiAt) {
+      tstate.last_decision = { action: 'hold', at: now(), cooldown: true };
+      return { status: 'running', last_error: null };
+    }
     const effTrading = { ...this.cfg.trading, maxPositionAmountUsd: plan.maxPositionAmountUsd };
     const ctx = {
       markets: markets.filter((m) => symbols.includes(m.symbol)),
@@ -316,7 +327,9 @@ export class BotEngine {
       tournament,
       cfg: effTrading,
     };
-    const system = buildSystemPrompt(tournament, { ...this.cfg, trading: effTrading });
+    const system = instruction
+      ? `${buildSystemPrompt(tournament, { ...this.cfg, trading: effTrading })}\n\nOPERATOR INSTRUCTIONS:\n${instruction}`
+      : buildSystemPrompt(tournament, { ...this.cfg, trading: effTrading });
     const user = buildUserPrompt({
       tournament,
       portfolio,
@@ -349,8 +362,10 @@ export class BotEngine {
       response: typeof llmRes.raw === 'string' ? llmRes.raw : null,
     });
     if (exchanges.length > 10) exchanges.splice(0, exchanges.length - 10);
-    if (!v.ok) this.log('warn', `tournament #${tid} decision invalid: ${v.error}`);
-    else if (v.decision.action !== 'hold') this.log('info', `tournament #${tid} decision: ${JSON.stringify(v.decision)}`);
+    // Każda decyzja AI ląduje w logu (także hold) — bez tego nie widać, że bot
+    // pytał AI i co odpowiedziało.
+    this.log('info', `tournament #${tid} AI decision: ${JSON.stringify(v.decision)}${v.error ? ` (invalid: ${v.error})` : ''}`);
+    if (askIntervalMin > 0) state.nextAiAt = nowMs + askIntervalMin * 60000;
 
     // 7. Egzekucja
     if (v.decision.action !== 'hold') {

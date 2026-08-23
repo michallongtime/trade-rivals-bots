@@ -148,6 +148,20 @@ export function createServer({ manager, store, cfg, offline, dryRun, startedAt, 
         return sendJson(res, 200, { exchanges: exchanges.slice(-10).reverse() });
       }
 
+      // Ustawienia AI edytowalne z dashboardu (instrukcja + cooldown pytań).
+      if (m === 'GET' && p === '/api/settings') {
+        return sendJson(res, 200, store.getSettings());
+      }
+      if (m === 'POST' && p === '/api/settings') {
+        const body = await collectBody(req);
+        const patch = {};
+        if (typeof body.aiInstruction === 'string') patch.aiInstruction = body.aiInstruction.slice(0, 4000);
+        if (Number.isFinite(Number(body.aiAskIntervalMin))) {
+          patch.aiAskIntervalMin = Math.max(0, Math.min(120, Math.round(Number(body.aiAskIntervalMin))));
+        }
+        return sendJson(res, 200, store.updateSettings(patch));
+      }
+
       sendJson(res, 404, { error: 'Not found' });
     } catch (e) {
       sendJson(res, e.status ?? 500, { error: e.message });
