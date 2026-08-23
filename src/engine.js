@@ -283,6 +283,43 @@ export class BotEngine {
       .filter((o) => o.status === 'pending')
       .map((o) => ({ id: o.id, type: o.type, side: o.side, market_id: o.market_id, position_id: o.position_id, price: o.price, qty: o.qty }));
 
+    // 3b. Gwarancja TP/SL (requireTpSl): każda otwarta pozycja musi mieć tp i sl.
+    // AI może pominąć poziomy przy otwarciu — doganiamy je tu z bieżącej ceny
+    // (dotyczy też pozycji otwartych przed włączeniem tej opcji).
+    if (this.cfg.trading.requireTpSl) {
+      const haveStops = new Map(); // position_id -> Set(type)
+      for (const o of tstate.pending_orders) {
+        if ((o.type === 'tp' || o.type === 'sl') && o.position_id != null) {
+          const s = haveStops.get(o.position_id) ?? new Set();
+          s.add(o.type);
+          haveStops.set(o.position_id, s);
+        }
+      }
+      for (const pos of tstate.positions) {
+        const have = haveStops.get(pos.id);
+        const need = [];
+        if (!have?.has('tp')) need.push('tp');
+        if (!have?.has('sl')) need.push('sl');
+        if (!need.length) continue;
+        const price = toNumber(pos.mark_price) || toNumber(pos.entry_price);
+        if (!price) continue;
+        const dir = pos.side === 'long' ? 1 : -1;
+        const tpP = toNumber(this.cfg.trading.autoTpPercent ?? 2) / 100;
+        const slP = toNumber(this.cfg.trading.autoSlPercent ?? 1.5) / 100;
+        for (const type of need) {
+          const mult = type === 'tp' ? 1 + tpP * dir : 1 - slP * dir;
+          try {
+            await this.withBusyRetry(() =>
+              this.api.createOrder(playerId, { market_id: pos.market_id, side: pos.side, type, price: price * mult, position_id: pos.id }),
+            );
+            this.log('info', `auto-${type} ${(price * mult).toFixed(2)} set for pos ${pos.id}`);
+          } catch (e) {
+            this.log('warn', `auto-${type} failed for pos ${pos.id}: ${e.message}`);
+          }
+        }
+      }
+    }
+
     // 4. Dane rynkowe
     const prices = {};
     const candlesBySymbol = {};
@@ -377,7 +414,19 @@ export class BotEngine {
     this.log('info', `tournament #${tid} AI decision: ${JSON.stringify(v.decision)}${v.error ? ` (invalid: ${v.error})` : ''}`);
     if (askIntervalMin > 0) state.nextAiAt = nowMs + askIntervalMin * 60000;
 
-    // 7. Egzekucja
+    // 7. Egzekucja. Gwarancja TP/SL przy otwieraniu: jeśli AI pominęło poziomy,
+    // uzupełniamy je z bieżącej ceny ZANIM złożymy zlecenie open.
+    if (v.decision.action === 'open' && this.cfg.trading.requireTpSl) {
+      const price = ctx.prices[v.decision.market_symbol];
+      if (price && price > 0) {
+        const dir = v.decision.side === 'long' ? 1 : -1;
+        const tpP = toNumber(this.cfg.trading.autoTpPercent ?? 2) / 100;
+        const slP = toNumber(this.cfg.trading.autoSlPercent ?? 1.5) / 100;
+        if (v.decision.tp_price == null) v.decision.tp_price = Math.round(price * (1 + tpP * dir) * 100) / 100;
+        if (v.decision.sl_price == null) v.decision.sl_price = Math.round(price * (1 - slP * dir) * 100) / 100;
+        this.log('info', `auto-tp/sl dla otwarcia: tp ${v.decision.tp_price}, sl ${v.decision.sl_price}`);
+      }
+    }
     if (v.decision.action !== 'hold') {
       await this.executeDecision(v.decision, ctx, playerId);
     }

@@ -63,6 +63,12 @@ const DEFAULTS = {
     maxOpenPositions: 3,
     maxLeverage: 10,
     minOrderSpacingMs: 2100, // >= 2000 (limit 30 zlecen/min)
+    // Gwarancja TP/SL: każda otwarta pozycja MUSI mieć tp i sl — silnik sam
+    // uzupełnia brakujące poziomy z bieżącej ceny (przy otwarciu i na już
+    // otwartych pozycjach bez poziomów). AI może je pominąć — to nie wystarczy.
+    requireTpSl: true,
+    autoTpPercent: 2, // auto-TP: +2% od ceny (long) / -2% (short)
+    autoSlPercent: 1.5, // auto-SL: -1.5% od ceny (long) / +1.5% (short)
     portfolioBusyRetries: 8,
     maxTickFailures: 3,
     fundingCheckTicks: 12, // co ile ticków ponawiać próbę join płatnego turnieju

@@ -512,6 +512,7 @@ console.log('\nI. Multi-turnieje:');
   // await — sekcja jest ostatnia przed synchronicznym cleanupem; bez tego
   // proces.exit zdąży ubić niezakończony test
   await okAsync('bot dołącza do 2 turniejów i handluje w obu', async () => {
+    const placedStops = { tp: 0, sl: 0 }; // licznik zleceń tp/sl wysłanych do API
     const T = {
       1: { id: 1, name: 'Zeta', status: 'running', can_join: true, markets: [{ id: 1, symbol: 'BTCUSDT' }] },
       2: { id: 2, name: 'Alpha', status: 'running', can_join: false, markets: [{ id: 1, symbol: 'BTCUSDT' }] },
@@ -535,7 +536,11 @@ console.log('\nI. Multi-turnieje:');
       m = url.pathname.match(/^\/api\/tournaments\/(\d+)$/);
       if (req.method === 'GET' && m) return json(200, { tournament: T[m[1]] });
       if (req.method === 'POST' && /^\/api\/portfolios\/\d+\/orders$/.test(url.pathname)) {
-        for await (const c of req) { /* body */ }
+        let body = '';
+        for await (const c of req) body += c;
+        const b = JSON.parse(body || '{}');
+        if (b.type === 'tp') placedStops.tp++;
+        if (b.type === 'sl') placedStops.sl++;
         return json(200, { order: { id: 11, position_id: 1 } });
       }
       if (req.method === 'GET' && url.pathname.startsWith('/api/portfolios/')) {
@@ -580,6 +585,10 @@ console.log('\nI. Multi-turnieje:');
     ok('bot aggregate = running', () => assert.strictEqual(st.status, 'running'));
     ok('lista turniejów w widoku alfabetycznie A→Z', () => {
       assert.deepStrictEqual(store.botViews()[0].tournaments.map((t) => t.name), ['Alpha', 'Zeta']);
+    });
+    ok('gwarancja TP/SL: poziomy wysłane do API mimo pominięcia przez AI', () => {
+      assert.ok(placedStops.tp >= 1, `tp wysłane (${placedStops.tp})`);
+      assert.ok(placedStops.sl >= 1, `sl wysłane (${placedStops.sl})`);
     });
 
     // instrukcja AI doklejana do promptu

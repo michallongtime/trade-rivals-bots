@@ -36,7 +36,10 @@
     "maxPositionAmountUsd": 1000,
     "maxEquityFraction": 0.5,
     "maxOpenPositions": 3,
-    "maxLeverage": 10
+    "maxLeverage": 10,
+    "requireTpSl": true,
+    "autoTpPercent": 2,
+    "autoSlPercent": 1.5
   },
   "server": {
     "host": "127.0.0.1",
