@@ -60,6 +60,13 @@ const DEFAULTS = {
   server: {
     host: '127.0.0.1',
     port: 3000,
+    auth: { // puste = tryb dev (host loopback); komplet = wymagany poza loopbackiem
+      user: '',
+      pass: '',
+      token: '',
+      maxAttempts: 4, // tyle błędnych prób z jednego IP -> blokada
+      lockMs: 1800000, // czas blokady (30 min)
+    },
   },
 };
 

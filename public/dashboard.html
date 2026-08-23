@@ -75,6 +75,7 @@
   <span class="badge">AI: <span id="bAi">–</span></span>
   <span class="badge">API: <span id="bApi">–</span></span>
   <span class="badge">uptime <span id="bUp">–</span></span>
+  <button class="ghost mini" id="logoutBtn" hidden>Wyloguj</button>
 </header>
 
 <div class="controls">
@@ -118,6 +119,18 @@
   <div id="logbody"></div>
 </div>
 
+<div id="login" class="overlay" hidden>
+  <div class="dialog" style="width:min(380px,94vw)">
+    <h2>Logowanie</h2>
+    <div class="hint">Wymagane: login, hasło i token (server.auth w config.json).</div>
+    <div class="prow"><input id="lUser" placeholder="login" autocomplete="username" spellcheck="false"></div>
+    <div class="prow"><input id="lPass" type="password" placeholder="hasło" autocomplete="current-password"></div>
+    <div class="prow"><input id="lToken" type="password" placeholder="token" autocomplete="off"></div>
+    <div class="modal-actions"><button id="lBtn">Zaloguj</button></div>
+    <div id="lErr" class="err"></div>
+  </div>
+</div>
+
 <script>
 const $ = (id) => document.getElementById(id);
 let bots = [];
@@ -134,10 +147,31 @@ function fmt(x) {
 function pnlCls(x) { const n = Number(x); return n > 0 ? 'pos' : n < 0 ? 'neg' : ''; }
 function esc(s) { return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
-async function api(path, opts) {
-  const r = await fetch(path, opts);
+const CREDS_KEY = 'tcbot_creds';
+const getCreds = () => { try { return JSON.parse(sessionStorage.getItem(CREDS_KEY) || 'null'); } catch { return null; } };
+const setCreds = (c) => sessionStorage.setItem(CREDS_KEY, JSON.stringify(c));
+const clearCreds = () => sessionStorage.removeItem(CREDS_KEY);
+function showLogin(msg, locked) { if (msg) $('lErr').textContent = msg; $('lBtn').disabled = !!locked; $('login').hidden = false; $('logoutBtn').hidden = true; }
+function hideLogin() { $('login').hidden = true; $('lErr').textContent = ''; $('logoutBtn').hidden = !getCreds(); }
+
+async function api(path, opts = {}) {
+  const c = getCreds();
+  const headers = { ...(opts.headers || {}) };
+  if (c) {
+    // encodeURIComponent — btoa rzuca wyjątek na polskie znaki w haśle
+    headers['Authorization'] = 'Basic ' + btoa(unescape(encodeURIComponent(c.user + ':' + c.pass)));
+    headers['X-Auth-Token'] = c.token;
+  }
+  const r = await fetch(path, { ...opts, headers });
+  if (r.status === 401) { clearCreds(); showLogin('Nieprawidłowe dane — zaloguj się ponownie.'); throw new Error('unauthorized'); }
+  if (r.status === 429) {
+    const min = Math.ceil(Number(r.headers.get('Retry-After') || 60) / 60);
+    showLogin(`Zbyt wiele prób logowania. Spróbuj za ~${min} min.`, true);
+    throw new Error('locked');
+  }
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j.error || (j.errors ? j.errors.join('; ') : 'HTTP ' + r.status));
+  hideLogin(); // sukces (np. po wygaśnięciu blokady poll co 3 s sam schowa overlay)
   return j;
 }
 
@@ -336,6 +370,15 @@ $('confirmBtn').onclick = confirmProposals;
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
 $('refreshBtn').onclick = load;
 $('logClose').onclick = closeLog;
+$('logoutBtn').onclick = () => { clearCreds(); location.reload(); };
+$('lBtn').onclick = async () => {
+  const user = $('lUser').value.trim(), pass = $('lPass').value, token = $('lToken').value.trim();
+  if (!user || !pass || !token) { $('lErr').textContent = 'Wypełnij wszystkie pola.'; return; }
+  setCreds({ user, pass, token });
+  hideLogin();
+  load();
+};
+if (!getCreds()) showLogin(); // overlay na starcie; poll co 3 s pokaże go też po 401
 setInterval(load, 3000);
 load();
 </script>

@@ -12,6 +12,7 @@ import { LlmClient } from './llm.js';
 import { TradeSimulator } from './mock.js';
 import { BotManager } from './manager.js';
 import { createServer } from './server.js';
+import { assertAuthConfig } from './auth.js';
 
 // Interaktywny wybór targetu (tylko gdy terminal, 15 s na odpowiedź).
 function promptTarget(defaultName, t) {
@@ -56,6 +57,10 @@ async function main() {
   if (targets?.targets?.[targetName]) applyTargetOverrides(cfg, targets.targets[targetName]);
   const dataDir = targets ? dataDirFor(targetName) : null; // null = legacy pliki w ROOT
   log('info', `target: ${targetName} (${cfg.api.baseUrl})`);
+
+  // Fail-closed ZANIM powstanie manager — błędna konfiguracja (publiczny bind bez
+  // server.auth) nie może zarejestrować kont na realnym API przed odmową startu.
+  assertAuthConfig(cfg);
 
   const store = new Store({ dataDir });
   const llm = new LlmClient(cfg.ai);

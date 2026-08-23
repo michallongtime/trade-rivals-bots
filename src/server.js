@@ -4,6 +4,7 @@ import http from 'node:http';
 import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { ROOT } from './config.js';
+import { assertAuthConfig, createAuthGuard } from './auth.js';
 
 const HTML_PATH = join(ROOT, 'public', 'dashboard.html');
 const HTML = readFileSync(HTML_PATH, 'utf8');
@@ -22,9 +23,9 @@ function getHtml() {
   return htmlCache.content;
 }
 
-function sendJson(res, code, obj) {
+function sendJson(res, code, obj, extra = {}) {
   const body = JSON.stringify(obj);
-  res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': Buffer.byteLength(body) });
+  res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': Buffer.byteLength(body), ...extra });
   res.end(body);
 }
 
@@ -48,16 +49,36 @@ function collectBody(req) {
 }
 
 export function createServer({ manager, store, cfg, offline, dryRun, startedAt, targetName }) {
+  assertAuthConfig(cfg); // fail-closed: publiczny bind bez server.auth = odmowa startu
+  const guard = createAuthGuard(cfg);
   return http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, `http://${req.headers.host ?? 'localhost'}`);
       const p = url.pathname;
       const m = req.method;
 
+      // Health dla Docker watchdoga — publiczne (sam {ok:true}, zero danych).
+      if (m === 'GET' && p === '/api/health') {
+        sendJson(res, 200, { ok: true });
+        return;
+      }
+
+      // Skorupa HTML jest publiczna (nie zawiera danych — wszystko jest za /api/*).
       if (m === 'GET' && p === '/') {
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(getHtml());
         return;
+      }
+
+      // Guard przed collectBody — nieudany auth nie czyta ciał żądań.
+      const g = guard(req);
+      if (!g.allowed) {
+        const extra = g.status === 429 ? { 'Retry-After': String(g.retryAfter) } : {};
+        return sendJson(res, g.status, {
+          error: g.status === 429
+            ? 'zbyt wiele nieudanych prób logowania — spróbuj później'
+            : 'wymagana autoryzacja (Basic + X-Auth-Token)',
+        }, extra);
       }
 
       if (m === 'GET' && p === '/api/status') {
