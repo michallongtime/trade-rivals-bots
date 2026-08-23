@@ -5,7 +5,7 @@
 // (w prompts.js), error recovery z backoffem.
 import { ApiError, AlreadyJoined, InsufficientFunds } from './api.js';
 import { buildSystemPrompt, buildUserPrompt, validateDecision } from './prompts.js';
-import { now, randBetween, seededRandom, shuffle, sleep, toNumber } from './util.js';
+import { now, randBetween, seededRandom, shortId, shuffle, sleep, toNumber } from './util.js';
 
 export class BotEngine {
   constructor({ account, api, llm, store, cfg, botId }) {
@@ -496,11 +496,13 @@ export async function runBotLoop(botId, deps, controller) {
   const signal = controller.signal;
   let failures = 0;
 
-  // Kamuflaż aktywności: stabilny profil per bot (seed z id) — własne tempo
-  // ticków + jitter (max odstęp < 120 s — próg "offline" w aplikacji), a
-  // czasem przerwa offline 10-90 min (zero zapytań), żeby na aplikacji nie
-  // wisiała zawsze ta sama grupa użytkowników online.
-  const rng = seededRandom(botId);
+  // Kamuflaż aktywności: własne tempo ticków + jitter (max odstęp < 120 s —
+  // próg "offline" w aplikacji), a czasem przerwa offline 10-90 min (zero
+  // zapytań), żeby na aplikacji nie wisiała zawsze ta sama grupa online.
+  // Seed = id bota + LOSOWY składnik: sam botId odtwarzałby po każdym
+  // restarcie kontenera identyczną sekwencję (te same przerwy w tych samych
+  // momentach = maszynowy wzorzec).
+  const rng = seededRandom(botId + ':' + shortId(8));
   const base = Math.round(cfg.trading.intervalMs * (0.7 + 0.6 * rng()));
   const jitter = cfg.trading.tickJitterFraction ?? 0;
   const idleChance = cfg.trading.idleChancePerTick ?? 0;
