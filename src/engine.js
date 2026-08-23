@@ -429,8 +429,9 @@ export async function runBotLoop(botId, deps, controller) {
   let failures = 0;
 
   // Kamuflaż aktywności: stabilny profil per bot (seed z id) — własne tempo
-  // ticków + jitter, a czasem przerwa offline (zero zapytań), żeby na aplikacji
-  // nie wisiała zawsze ta sama grupa użytkowników online.
+  // ticków + jitter (max odstęp < 120 s — próg "offline" w aplikacji), a
+  // czasem przerwa offline 10-90 min (zero zapytań), żeby na aplikacji nie
+  // wisiała zawsze ta sama grupa użytkowników online.
   const rng = seededRandom(botId);
   const base = Math.round(cfg.trading.intervalMs * (0.7 + 0.6 * rng()));
   const jitter = cfg.trading.tickJitterFraction ?? 0;
@@ -465,7 +466,7 @@ export async function runBotLoop(botId, deps, controller) {
     // Odstęp z jitterem (losowy, per tick)
     const j = 1 + (rng() * 2 - 1) * jitter;
     await sleep(Math.max(5000, Math.round(base * j)), signal);
-    // Czasem przerwa offline — bot "znika" na 5-40 min (żadnych zapytań API)
+    // Czasem przerwa offline — bot "znika" na 10-90 min (żadnych zapytań API)
     if (idleChance > 0 && idleMax > idleMin && rng() < idleChance) {
       const idleMs = Math.round(randBetween(rng, idleMin, idleMax));
       store.addLogEntry(botId, 'info', `idle (human-like), resume in ${Math.round(idleMs / 60000)} min`);
