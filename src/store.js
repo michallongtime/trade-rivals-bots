@@ -10,8 +10,8 @@ export class Store {
     if (dataDir == null) dataDir = ROOT; // null nie aktywuje defaulta destrukturyzacji
     this.accountsFile = accountsFile ?? join(dataDir, 'accounts.json');
     this.stateFile = stateFile ?? join(dataDir, 'state.json');
-    this.accounts = loadJsonFile(accountsFile, { version: 1, accounts: [] });
-    this.state = loadJsonFile(stateFile, { version: 1, bots: {} });
+    this.accounts = loadJsonFile(this.accountsFile, { version: 1, accounts: [] });
+    this.state = loadJsonFile(this.stateFile, { version: 1, bots: {} });
   }
 
   saveAccounts() {

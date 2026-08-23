@@ -323,6 +323,17 @@ console.log('\nF. Targety:');
     assert.strictEqual(sLocal.getAccount('b-1').token, 't');
     assert.strictEqual(sProd.getAccount('b-1'), undefined);
   });
+  ok('dataDir: konto i stan wczytane po przeładowaniu (regresja ładowania)', () => {
+    const d2 = mkdtempSync(join(tmpdir(), 'tcbot-tgt2-'));
+    const s1 = new Store({ dataDir: join(d2, 'prod') });
+    s1.upsertAccount({ id: 'b-9', nickname: 'x', email: 'x@y.z', password: 'p', token: 't', user_id: 1, player_id: 2, tournament_id: 7, created_at: 'now' });
+    s1.addLogEntry('b-9', 'info', 'hello');
+    s1.saveState();
+    const s2 = new Store({ dataDir: join(d2, 'prod') });
+    assert.strictEqual(s2.getAccount('b-9').token, 't', 'konto wczytane z dataDir');
+    assert.strictEqual(s2.state.bots['b-9'].log[0].msg, 'hello', 'stan wczytany z dataDir');
+    rmSync(d2, { recursive: true, force: true });
+  });
   rmSync(d, { recursive: true, force: true });
 }
 
