@@ -46,13 +46,13 @@ const DEFAULTS = {
     intervalMs: 45000,
     // Kamuflaż aktywności. Aplikacja oznacza usera offline gdy brak calla > 120 s:
     //   - bot "obecny": max odstęp między callami ~90 s (< 120 s) — nie miga offline
-    //   - po ticku szansa przerwy offline (idleChancePerTick) 10-90 min — bot znika,
-    //     przez co liczba online na aplikacji naturalnie faluje
+    //   - po ticku szansa krótkiej przerwy offline (idleChancePerTick) 1-10 min —
+    //     bot "znika" na chwilę, przez co liczba online na aplikacji faluje
     // tickBase = intervalMs * los(0.7..1.3) per bot (seed z id) + jitter ±.
     tickJitterFraction: 0.5, // ±50% odstępu na każdy tick (max ~90 s przy bazie 45 s)
-    idleChancePerTick: 0.15, // szansa przerwy offline po ticku (0 = wyłączone)
-    idleMinMs: 600000, // przerwa: min (10 min)
-    idleMaxMs: 5400000, // przerwa: max (90 min)
+    idleChancePerTick: 0.12, // szansa przerwy offline po ticku (0 = wyłączone)
+    idleMinMs: 60000, // przerwa: min (1 min)
+    idleMaxMs: 600000, // przerwa: max (10 min)
     symbols: ['BTCUSDT', 'ETHUSDT'], // pula kandydatów — boty grają TYLKO rynki turnieju
     symbolsPerBot: 1, // ile rynków z puli losuje każdy bot (1 = jeden rynek na bota)
     budgetMinFraction: 0.3, // budżet bota = maxPositionAmountUsd * los(0.3..1)

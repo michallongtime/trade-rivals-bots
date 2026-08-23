@@ -497,8 +497,8 @@ export async function runBotLoop(botId, deps, controller) {
   let failures = 0;
 
   // Kamuflaż aktywności: własne tempo ticków + jitter (max odstęp < 120 s —
-  // próg "offline" w aplikacji), a czasem przerwa offline 10-90 min (zero
-  // zapytań), żeby na aplikacji nie wisiała zawsze ta sama grupa online.
+  // próg "offline" w aplikacji), a czasem krótka przerwa offline 1-10 min
+  // (zero zapytań), żeby na aplikacji nie wisiała zawsze ta sama grupa online.
   // Seed = id bota + LOSOWY składnik: sam botId odtwarzałby po każdym
   // restarcie kontenera identyczną sekwencję (te same przerwy w tych samych
   // momentach = maszynowy wzorzec).
@@ -536,7 +536,7 @@ export async function runBotLoop(botId, deps, controller) {
     // Odstęp z jitterem (losowy, per tick)
     const j = 1 + (rng() * 2 - 1) * jitter;
     await sleep(Math.max(5000, Math.round(base * j)), signal);
-    // Czasem przerwa offline — bot "znika" na 10-90 min (żadnych zapytań API)
+    // Czasem krótka przerwa offline — bot "znika" na 1-10 min (żadnych zapytań API)
     if (idleChance > 0 && idleMax > idleMin && rng() < idleChance) {
       const idleMs = Math.round(randBetween(rng, idleMin, idleMax));
       store.addLogEntry(botId, 'info', `idle (human-like), resume in ${Math.round(idleMs / 60000)} min`);
