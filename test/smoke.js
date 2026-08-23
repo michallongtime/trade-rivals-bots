@@ -65,6 +65,13 @@ console.log('A. Store:');
   s2.saveState(); // zapis atomowy przed przeładowaniem
   const s3 = new Store({ accountsFile: join(tmp, 'accounts.json'), stateFile: join(tmp, 'state.json') });
   ok('log przetrwa przeładowanie', () => assert.strictEqual(s3.state.bots['b-1'].log[0].msg, 'hello'));
+  ok('settings: defaulty, update i persystencja', () => {
+    const sa = new Store({ accountsFile: join(tmp, 'st-a.json'), stateFile: join(tmp, 'st-s.json') });
+    assert.deepStrictEqual(sa.getSettings(), { aiInstruction: '', aiAskIntervalMin: 0 });
+    sa.updateSettings({ aiInstruction: 'graj agresywnie', aiAskIntervalMin: 5 });
+    const sb = new Store({ accountsFile: join(tmp, 'st-a.json'), stateFile: join(tmp, 'st-s.json') });
+    assert.deepStrictEqual(sb.getSettings(), { aiInstruction: 'graj agresywnie', aiAskIntervalMin: 5 });
+  });
 }
 
 // ============ B. Walidacja decyzji ============
@@ -161,19 +168,20 @@ let managerOffline = null;
   await sleep(6000);
   const views = store.botViews();
   ok('boty dołączyły i mają portfolio', () => views.length === 2 && views.every((b) => b.portfolio && b.status === 'running'));
-  ok('historia dołączonych turniejów w widoku bota', () =>
-    views.every((b) => (b.joinedTournaments ?? []).some((t) => t.id === 7 && t.name && t.joined_at)));
-  ok('licznik zapytań AI per bot > 0', () => views.every((b) => (b.aiRequests ?? 0) > 0));
+  ok('historia dołączonych turniejów w widoku bota', () => {
+    for (const b of views) {
+      assert.ok((b.joinedTournaments ?? []).some((t) => t.id === 7 && t.name && t.joined_at), `bot ${b.id}`);
+    }
+  });
+  ok('licznik zapytań AI per bot > 0', () => {
+    for (const b of views) assert.ok((b.aiRequests ?? 0) > 0, `bot ${b.id}`);
+  });
   ok('wymiany AI zapisane (prompt + odpowiedź)', () => {
     const st = store.getBotState(Object.keys(store.state.bots)[0]);
-    return (
-      Array.isArray(st.ai_exchanges) &&
-      st.ai_exchanges.length > 0 &&
-      typeof st.ai_exchanges[0].system === 'string' &&
-      st.ai_exchanges[0].user &&
-      st.ai_exchanges[0].response != null &&
-      st.ai_exchanges[0].tournament_id === 7
-    );
+    assert.ok(Array.isArray(st.ai_exchanges) && st.ai_exchanges.length > 0, 'są wymiany');
+    assert.ok(typeof st.ai_exchanges[0].system === 'string' && st.ai_exchanges[0].user, 'prompt system/user');
+    assert.notStrictEqual(st.ai_exchanges[0].response, undefined, 'odpowiedź AI');
+    assert.strictEqual(st.ai_exchanges[0].tournament_id, 7, 'turniej w wymianie');
   });
   ok('boty handlują (otwarte pozycje)', () => views.some((b) => b.positions.length > 0));
   ok('plan per bot: rynki z turnieju, zróżnicowane budżety', () =>
@@ -563,6 +571,29 @@ console.log('\nI. Multi-turnieje:');
     });
     ok('bot aggregate = running', () => assert.strictEqual(st.status, 'running'));
     ok('historia turniejów ma 2 wpisy', () => assert.strictEqual(st.joinedTournaments.length, 2));
+
+    // instrukcja AI doklejana do promptu
+    store.updateSettings({ aiInstruction: 'graj TYLKO z trendem' });
+    await engine.tick();
+    const stA = store.getBotState('b-multi');
+    ok('instrukcja doklejona do promptu systemowego', () => {
+      const ex = stA.ai_exchanges.at(-1);
+      assert.ok(/OPERATOR INSTRUCTIONS/.test(ex?.system ?? ''), 'system zawiera OPERATOR INSTRUCTIONS');
+      assert.ok((ex?.system ?? '').includes('graj TYLKO z trendem'), 'system zawiera tekst instrukcji');
+    });
+
+    // cooldown: co ile minut bot może pytać AI
+    const before = stA.ai_requests;
+    store.updateSettings({ aiAskIntervalMin: 60 });
+    await engine.tick(); // pierwszy tick po zmianie — pyta, ustawia nextAiAt
+    const afterFirst = store.getBotState('b-multi').ai_requests;
+    await engine.tick(); // kolejny tick w limicie — cooldown, nie pyta
+    const stB = store.getBotState('b-multi');
+    ok('cooldown AI: bot nie pyta w trakcie limitu', () => {
+      assert.ok(afterFirst > before, 'pierwszy tick po zmianie pyta');
+      assert.strictEqual(stB.ai_requests, afterFirst, 'kolejny tick w limicie nie pyta');
+      assert.ok(Object.values(stB.tournaments).every((t) => t.last_decision?.cooldown === true), 'decyzje cooldown');
+    });
     srv.close();
   });
 }

@@ -86,6 +86,15 @@
   <span class="muted" id="queueInfo"></span>
 </div>
 
+<div class="controls" style="margin-bottom:10px">
+  <span class="muted">🤖 AI:</span>
+  <input type="number" id="aiInterval" value="0" min="0" max="120" style="width:70px" title="co ile minut bot może pytać AI (0 = każdy tick)">
+  <span class="muted">min między pytaniami</span>
+  <textarea id="aiInstruction" rows="1" placeholder="Instrukcja dla AI — doklejana automatycznie do kontekstu giełdowego/świecowego (np. „graj tylko z trendem, ciasne TP/SL")" style="flex:1;background:var(--panel);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:8px 10px;font:13px system-ui;resize:vertical;min-width:220px"></textarea>
+  <button id="saveAiBtn">Zapisz ustawienia AI</button>
+  <span class="muted" id="aiSaved"></span>
+</div>
+
 <div class="chips" id="chips"></div>
 
 <div id="modal" class="overlay" hidden>
@@ -496,6 +505,32 @@ $('lBtn').onclick = async () => {
   hideLogin();
   load();
 };
+// --- ustawienia AI (instrukcja + cooldown pytań) ---
+async function loadAiSettings() {
+  try {
+    const s = await api('/api/settings');
+    $('aiInstruction').value = s.aiInstruction ?? '';
+    $('aiInterval').value = s.aiAskIntervalMin ?? 0;
+  } catch { /* 401/429 obsłużone */ }
+}
+$('saveAiBtn').onclick = async () => {
+  try {
+    const r = await api('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        aiInstruction: $('aiInstruction').value,
+        aiAskIntervalMin: Number($('aiInterval').value) || 0,
+      }),
+    });
+    $('aiSaved').textContent = '✓ zapisano (instrukcja: ' + (r.aiInstruction ? r.aiInstruction.length + ' znaków' : 'brak') + ', cooldown: ' + r.aiAskIntervalMin + ' min)';
+    setTimeout(() => { $('aiSaved').textContent = ''; }, 5000);
+  } catch (e) {
+    $('aiSaved').textContent = 'błąd zapisu: ' + e.message;
+  }
+};
+loadAiSettings();
+
 if (!getCreds()) showLogin(); // overlay na starcie
 else startAutoRefresh();     // są creds — polling wznawia się po sukcesie load()
 load();

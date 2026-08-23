@@ -80,6 +80,24 @@ export class Store {
     return total;
   }
 
+  // Ustawienia edytowalne z dashboardu (persistowane w state.json -> meta).
+  // aiInstruction: instrukcja operatora doklejana do promptu systemowego AI.
+  // aiAskIntervalMin: cooldown — co ile minut bot może pytać AI (0 = każdy tick).
+  getSettings() {
+    const s = this.state.meta?.settings ?? {};
+    return {
+      aiInstruction: typeof s.aiInstruction === 'string' ? s.aiInstruction : '',
+      aiAskIntervalMin: Number.isFinite(s.aiAskIntervalMin) ? s.aiAskIntervalMin : 0,
+    };
+  }
+
+  updateSettings(patch) {
+    const meta = this.state.meta ??= {};
+    meta.settings = { ...(meta.settings ?? {}), ...patch };
+    this.saveState();
+    return this.getSettings();
+  }
+
   addLogEntry(id, level, msg) {
     const s = this.getBotState(id);
     s.log.push({ ts: now(), level, msg });
