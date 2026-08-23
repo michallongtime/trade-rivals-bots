@@ -1,6 +1,6 @@
 {
   "name": "tradecontest-bot",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "description": "Lekki bot handlowy do TradeContest z decyzjami AI (OpenAI/DeepSeek) i dashboardem na localhost",
   "type": "module",
   "private": true,
