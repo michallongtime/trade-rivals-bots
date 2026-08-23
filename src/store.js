@@ -92,6 +92,7 @@ export class Store {
       positions: s.positions,
       pending_orders: s.pending_orders,
       trading_plan: s.trading_plan ?? null,
+      joinedTournaments: s.joinedTournaments ?? [],
       rank: s.rank,
       players_count: s.players_count,
       last_decision: s.last_decision,

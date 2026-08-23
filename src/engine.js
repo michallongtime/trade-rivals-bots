@@ -89,6 +89,7 @@ export class BotEngine {
       this.store.upsertAccount(account);
       state.status = 'running';
       this.log('info', `joined tournament #${tournament.id} as player ${account.player_id}`);
+      this.recordJoin(state, tournament);
       return tournament.id;
     } catch (e) {
       if (e instanceof AlreadyJoined) {
@@ -100,6 +101,7 @@ export class BotEngine {
           this.store.upsertAccount(account);
           state.status = 'running';
           this.log('info', `already joined as player ${pid}`);
+          this.recordJoin(state, tournament);
           return tournament.id;
         }
       }
@@ -117,6 +119,14 @@ export class BotEngine {
       }
       throw e;
     }
+  }
+
+  // Historia dołączonych turniejów (dla dashboardu) — deduplikacja po id.
+  recordJoin(state, t) {
+    const list = state.joinedTournaments ??= [];
+    const existing = list.find((x) => x.id === t.id);
+    if (existing) { existing.status = t.status; return; }
+    list.push({ id: t.id, name: t.name, status: t.status, joined_at: now() });
   }
 
   // Jedna iteracja pętli handlowej.
@@ -152,6 +162,10 @@ export class BotEngine {
           markets: fresh.markets ?? [],
         };
         state.tournament = tournament;
+        // żywy status w historii dołączonych turniejów
+        const hist = state.joinedTournaments ??= [];
+        const h = hist.find((x) => x.id === tournament.id);
+        if (h) h.status = tournament.status;
       }
     } catch (e) {
       this.log('warn', `tournament refresh failed: ${e.message}`);

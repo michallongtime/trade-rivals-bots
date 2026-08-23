@@ -105,7 +105,7 @@
   <thead>
     <tr>
       <th>Bot</th><th>Status</th><th>Equity</th><th>Realiz. PnL</th><th>Niezrealiz.</th>
-      <th>Rank</th><th>Pozycje</th><th>Ostatnia decyzja</th><th>Ostatni błąd</th><th>Akcje</th>
+      <th>Rank</th><th>Pozycje</th><th>Turnieje</th><th>Ostatnia decyzja</th><th>Ostatni błąd</th><th>Akcje</th>
     </tr>
   </thead>
   <tbody id="rows"></tbody>
@@ -216,7 +216,7 @@ async function load() {
     chip('Wstrzymane', 'paused') + chip('Czekają', 'waiting') +
     chip('Brak środków', 'needs_funding') + chip('Błędy', 'error', 'error');
 
-  $('rows').innerHTML = bots.length ? bots.map(rowHtml).join('') : '<tr><td colspan="10" class="empty">Brak botów — utwórz pierwsze konta powyżej.</td></tr>';
+  $('rows').innerHTML = bots.length ? bots.map(rowHtml).join('') : '<tr><td colspan="11" class="empty">Brak botów — utwórz pierwsze konta powyżej.</td></tr>';
 }
 
 function rowHtml(b) {
@@ -231,8 +231,10 @@ function rowHtml(b) {
   const actions = b.status === 'running' || b.status === 'waiting' || b.status === 'needs_funding' || b.status === 'error' || b.status === 'new'
     ? `<button class="mini ghost" onclick="evPause('${b.id}', event)">⏸</button>`
     : `<button class="mini ghost" onclick="evResume('${b.id}', event)">▶</button>`;
+  const tj = b.joinedTournaments ?? [];
   const plan = b.trading_plan;
-  return `<tr class="clickable" onclick="openLog('${b.id}', '${esc(b.nickname)}')">
+  const expanded = b.id === expandedBot;
+  return `<tr class="clickable" onclick="toggleExpand('${b.id}')">
     <td><b>${esc(b.nickname)}</b><div class="muted" style="font-size:11px">${esc(b.email ?? '')}${plan ? ` · 🎯 ${esc(plan.symbols.join(', '))} · do ${plan.maxPositionAmountUsd} USDT` : ''}</div></td>
     <td><span class="st ${b.status}"><span class="dot"></span>${b.status.replace('_', ' ')}</span></td>
     <td class="${pnlCls(Number(eq) - 10000)}">${fmt(eq)}</td>
@@ -240,10 +242,59 @@ function rowHtml(b) {
     <td class="${pnlCls(up)}">${fmt(up)}</td>
     <td>${b.rank != null ? `${b.rank}/${b.players_count ?? '?'}` : '–'}</td>
     <td>${pnls}</td>
+    <td title="${tj.length ? tj.map((t) => esc(t.name ?? '#' + t.id)).join('; ') : ''}">🏆 ${tj.length}</td>
     <td class="muted" style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(dec)}">${esc(dec)}</td>
     <td><span class="err" title="${esc(b.last_error ?? '')}">${esc(b.last_error ?? '')}</span></td>
-    <td><div class="actions" onclick="event.stopPropagation()">${actions}<button class="mini danger" onclick="evDelete('${b.id}', event)">🗑</button></div></td>
-  </tr>`;
+    <td><div class="actions" onclick="event.stopPropagation()">${actions}<button class="mini ghost" onclick="openLog('${b.id}', '${esc(b.nickname)}')" title="Log">📜</button><button class="mini danger" onclick="evDelete('${b.id}', event)">🗑</button></div></td>
+  </tr>${expanded ? detailsRow(b) : ''}`;
+}
+
+// Rozwijany rekord: dołączone turnieje (statusy) + otwarte pozycje.
+function detailsRow(b) {
+  const tj = b.joinedTournaments ?? [];
+  const pos = b.positions ?? [];
+  const tRows = tj.length
+    ? tj.map((t) => `<tr>
+        <td>${esc(t.name ?? '#' + t.id)}</td>
+        <td><span class="st ${tStatusCls(t.status)}"><span class="dot"></span>${esc(t.status ?? '?')}</span></td>
+        <td class="muted">${esc((t.joined_at ?? '').slice(0, 19).replace('T', ' '))}</td>
+      </tr>`).join('')
+    : '<tr><td colspan="3" class="empty" style="padding:10px">brak dołączonych turniejów</td></tr>';
+  const pRows = pos.length
+    ? pos.map((p) => `<tr>
+        <td>${esc(p.market_symbol ?? p.market_id ?? '?')}</td>
+        <td>${esc(p.side ?? '')}</td>
+        <td>${fmt(p.qty)}</td>
+        <td>${fmt(p.entry_price)}</td>
+        <td>${fmt(p.mark_price)}</td>
+        <td class="${pnlCls(p.unrealized_pnl)}">${fmt(p.unrealized_pnl)}</td>
+      </tr>`).join('')
+    : '<tr><td colspan="6" class="empty" style="padding:10px">brak otwartych pozycji</td></tr>';
+  return `<tr><td colspan="11" style="padding:8px 12px;background:#1b1f2b">
+    <div style="display:flex;gap:24px;flex-wrap:wrap">
+      <div style="flex:1;min-width:280px">
+        <div class="muted" style="margin-bottom:6px">🏆 Dołączone turnieje (${tj.length})</div>
+        <table style="background:transparent"><thead><tr><th>Turniej</th><th>Status</th><th>Dołączył</th></tr></thead><tbody>${tRows}</tbody></table>
+      </div>
+      <div style="flex:1;min-width:340px">
+        <div class="muted" style="margin-bottom:6px">📊 Otwarte pozycje (${pos.length})</div>
+        <table style="background:transparent"><thead><tr><th>Rynek</th><th>Kierunek</th><th>Ilość</th><th>Wejście</th><th>Mark</th><th>Niezrealiz.</th></tr></thead><tbody>${pRows}</tbody></table>
+      </div>
+    </div>
+  </td></tr>`;
+}
+
+// Kolory statusów turnieju (mapowane na istniejące klasy botów).
+function tStatusCls(s) {
+  if (s === 'running') return 'running';
+  if (s === 'registration_open') return 'waiting';
+  return 'paused';
+}
+
+let expandedBot = null;
+function toggleExpand(id) {
+  expandedBot = expandedBot === id ? null : id;
+  load();
 }
 
 async function evPause(id, e) { e?.stopPropagation(); await api(`/api/bots/${id}/pause`, { method: 'POST' }); load(); }

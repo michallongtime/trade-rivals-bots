@@ -158,6 +158,8 @@ let managerOffline = null;
   await sleep(6000);
   const views = store.botViews();
   ok('boty dołączyły i mają portfolio', () => views.length === 2 && views.every((b) => b.portfolio && b.status === 'running'));
+  ok('historia dołączonych turniejów w widoku bota', () =>
+    views.every((b) => (b.joinedTournaments ?? []).some((t) => t.id === 7 && t.name && t.joined_at)));
   ok('boty handlują (otwarte pozycje)', () => views.some((b) => b.positions.length > 0));
   ok('plan per bot: rynki z turnieju, zróżnicowane budżety', () =>
     views.every((b) => {
