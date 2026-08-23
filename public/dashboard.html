@@ -372,7 +372,8 @@ $('refreshBtn').onclick = load;
 $('logClose').onclick = closeLog;
 $('logoutBtn').onclick = () => { clearCreds(); location.reload(); };
 $('lBtn').onclick = async () => {
-  const user = $('lUser').value.trim(), pass = $('lPass').value, token = $('lToken').value.trim();
+  // trim wszystkich pól — kopiowanie z chat/pliku łapie białe znaki z końca linii
+  const user = $('lUser').value.trim(), pass = $('lPass').value.trim(), token = $('lToken').value.trim();
   if (!user || !pass || !token) { $('lErr').textContent = 'Wypełnij wszystkie pola.'; return; }
   setCreds({ user, pass, token });
   hideLogin();
