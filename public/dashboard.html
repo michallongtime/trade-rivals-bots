@@ -246,36 +246,40 @@ function rowHtml(b) {
   const aiCell = `<td rowspan="${n}" title="wygenerowane zapytania AI">🤖 ${b.aiRequests ?? 0}</td>`;
   const errCell = `<td rowspan="${n}"><span class="err" title="${esc(b.last_error ?? '')}">${esc(b.last_error ?? '')}</span></td>`;
   const actCell = `<td rowspan="${n}"><div class="actions" onclick="event.stopPropagation()">${actions}<button class="mini ghost" onclick="openLog('${b.id}', '${esc(b.nickname)}')" title="Log">📜</button><button class="mini danger" onclick="evDelete('${b.id}', event)">🗑</button></div></td>`;
-  // Komórki per turniej: Turnieje (nazwa), Equity, Realiz. PnL, Niezrealiz.,
-  // Rank, Pozycje, Ostatnia decyzja — jedna linia na turniej bota.
+  // Komórki per turniej — KOLEJNOŚĆ ZGODNA Z NAGŁÓWKIEM:
+  // Equity(3), Realiz. PnL(4), Niezrealiz.(5), Rank(6), Pozycje(7), Turnieje(8).
+  // Komórka decyzji (10) idzie po AI(9) — stąd osobna funkcja decCell.
   const cellsFor = (t) => {
-    if (!t) return `<td>–</td><td>–</td><td>–</td><td>–</td><td>–</td><td>–</td><td class="muted">–</td>`;
+    if (!t) return `<td>–</td><td>–</td><td>–</td><td>–</td><td>–</td><td>–</td>`;
     const p = t.portfolio ?? {};
     const plan = t.trading_plan ?? null;
-    const dec = t.last_decision
-      ? (t.last_decision.error ? `${t.last_decision.action} (${t.last_decision.error})` : JSON.stringify(t.last_decision))
-      : '–';
     const pos = t.positions ?? [];
     const pnls = pos.length ? `<span class="muted">${pos.length}×</span> ` + pos.map((x) =>
       `<span title="${esc(x.market_symbol)} ${x.side} qty ${x.qty} @ ${x.entry_price}">${esc(x.market_symbol)}</span>`).join(', ') : '–';
-    return `<td title="turniej">🏆 ${esc(t.name ?? '#' + t.id)}${plan ? `<div class="muted" style="font-size:11px">🎯 ${esc(plan.symbols.join(', '))} · do ${plan.maxPositionAmountUsd} USDT</div>` : ''}</td>
-      <td class="${pnlCls(Number(p.equity) - 10000)}">${fmt(p.equity)}</td>
+    return `<td class="${pnlCls(Number(p.equity) - 10000)}">${fmt(p.equity)}</td>
       <td class="${pnlCls(p.realized_pnl)}">${fmt(p.realized_pnl)}</td>
       <td class="${pnlCls(p.unrealized_pnl)}">${fmt(p.unrealized_pnl)}</td>
       <td>${t.rank != null ? `${t.rank}/${t.players_count ?? '?'}` : '–'}</td>
       <td>${pnls}</td>
-      <td class="muted" style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(dec)}">${esc(dec)}</td>`;
+      <td title="turniej">🏆 ${esc(t.name ?? '#' + t.id)}${plan ? `<div class="muted" style="font-size:11px">🎯 ${esc(plan.symbols.join(', '))} · do ${plan.maxPositionAmountUsd} USDT</div>` : ''}</td>`;
+  };
+  const decCell = (t) => {
+    if (!t) return `<td class="muted">–</td>`;
+    const dec = t.last_decision
+      ? (t.last_decision.error ? `${t.last_decision.action} (${t.last_decision.error})` : JSON.stringify(t.last_decision))
+      : '–';
+    return `<td class="muted" style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(dec)}">${esc(dec)}</td>`;
   };
   const lines = tours.length
     ? tours.map((t, i) => i === 0
         ? `<tr class="clickable" onclick="toggleExpand('${b.id}')">
             <td rowspan="${n}"><b>${esc(b.nickname)}</b><div class="muted" style="font-size:11px">${esc(b.email ?? '')} · 🏆 ${tjCount}</div></td>
-            ${stCell}${cellsFor(t)}${aiCell}${errCell}${actCell}
+            ${stCell}${cellsFor(t)}${aiCell}${decCell(t)}${errCell}${actCell}
           </tr>`
-        : `<tr class="clickable" onclick="toggleExpand('${b.id}')">${cellsFor(t)}</tr>`)
+        : `<tr class="clickable" onclick="toggleExpand('${b.id}')">${cellsFor(t)}${decCell(t)}</tr>`)
     : [`<tr class="clickable" onclick="toggleExpand('${b.id}')">
         <td rowspan="1"><b>${esc(b.nickname)}</b><div class="muted" style="font-size:11px">${esc(b.email ?? '')} · 🏆 0</div></td>
-        ${stCell}${cellsFor(null)}${aiCell}${errCell}${actCell}
+        ${stCell}${cellsFor(null)}${aiCell}${decCell(null)}${errCell}${actCell}
       </tr>`];
   return lines.join('') + (expanded ? detailsRow(b) : '');
 }
