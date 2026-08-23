@@ -238,7 +238,8 @@ function rowHtml(b) {
   const actions = b.status === 'running' || b.status === 'waiting' || b.status === 'needs_funding' || b.status === 'error' || b.status === 'new'
     ? `<button class="mini ghost" onclick="evPause('${b.id}', event)">⏸</button>`
     : `<button class="mini ghost" onclick="evResume('${b.id}', event)">▶</button>`;
-  const tjCount = (b.joinedTournaments ?? []).length;
+  // liczba turniejów, w których bot GRA (stan faktyczny — nie historia)
+  const tjCount = (b.tournaments ?? []).length;
   const expanded = b.id === expandedBot;
   // Komórki scalone (bot-level): Bot, Status, AI, Ostatni błąd, Akcje.
   const stCell = `<td rowspan="${n}"><span class="st ${b.status}"><span class="dot"></span>${b.status.replace('_', ' ')}</span></td>`;
