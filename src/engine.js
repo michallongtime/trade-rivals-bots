@@ -1,7 +1,8 @@
 // engine.js — pętla handlowa jednego bota.
-// tick(): join assurance -> status turnieju -> portfolio/dane -> decyzja AI ->
-// egzekucja -> snapshot. Obsługa: lock "Portfolio is busy" (retry 1s), 429/401
-// (w api.js), weta bezpieczeństwa (w prompts.js), error recovery z backoffem.
+// tick(): join assurance (do maxTournamentsPerBot turniejów) -> per turniej:
+// status -> portfolio/dane -> decyzja AI -> egzekucja -> snapshot. Obsługa:
+// lock "Portfolio is busy" (retry 1s), 429/401 (w api.js), weta bezpieczeństwa
+// (w prompts.js), error recovery z backoffem.
 import { ApiError, AlreadyJoined, InsufficientFunds } from './api.js';
 import { buildSystemPrompt, buildUserPrompt, validateDecision } from './prompts.js';
 import { now, randBetween, seededRandom, shuffle, sleep, toNumber } from './util.js';
@@ -24,103 +25,6 @@ export class BotEngine {
     return this.store.getBotState(this.botId);
   }
 
-  // Dołączenie do turnieju: discovery (forceId | can_join), gate opłaty wpisowej,
-  // join z obsługą 409 (już zapisany -> player_id z /tournaments/{id}) i 402.
-  async ensureJoined() {
-    const account = this.account;
-    const state = this.getState();
-    if (account.player_id && account.tournament_id) return account.tournament_id;
-
-    let tournament = null;
-    const forced = this.cfg.tournament.forceId;
-    if (forced) {
-      tournament = (await this.api.getTournament(forced))?.tournament ?? null;
-      if (!tournament) {
-        this.log('warn', `forced tournament ${forced} not found`);
-        return null;
-      }
-    } else {
-      const list = await this.api.listTournaments();
-      const ts = list?.tournaments ?? [];
-      const pick = (s) => ts.find((t) => t.status === s && t.can_join);
-      const prefer = this.cfg.tournament.preferStatus;
-      const fallback = this.cfg.tournament.fallbackStatus;
-      tournament = pick(prefer) ?? pick(fallback) ?? ts.find((t) => t.can_join) ?? null;
-      if (!tournament) {
-        this.log('info', 'no joinable tournament, waiting');
-        state.status = 'waiting';
-        return null;
-      }
-    }
-
-    const meta = {
-      id: tournament.id,
-      name: tournament.name,
-      status: tournament.status,
-      is_paid: !!tournament.is_paid,
-      entry_fee: tournament.entry_fee,
-      max_leverage: tournament.max_leverage,
-      fee_percent: tournament.fee_percent,
-      lending_fee_daily_percent: tournament.lending_fee_daily_percent,
-      markets: tournament.markets ?? [],
-    };
-    state.tournament = meta;
-
-    if (tournament.is_paid) {
-      const fee = toNumber(tournament.entry_fee);
-      if (fee > this.cfg.tournament.maxEntryFeeUsd) {
-        this.log('warn', `entry fee ${fee} > max allowed ${this.cfg.tournament.maxEntryFeeUsd}, skipping`);
-        state.status = 'waiting';
-        return null;
-      }
-      const wallet = await this.api.getWallet();
-      const balance = toNumber(wallet?.wallet?.balance);
-      if (balance < fee) {
-        this.log('warn', `needs funding: wallet ${balance} USDT, entry fee ${fee} USDT`);
-        state.status = 'needs_funding';
-        return null;
-      }
-    }
-
-    try {
-      const res = await this.api.joinTournament(tournament.id);
-      account.player_id = res.player.id;
-      account.tournament_id = tournament.id;
-      this.store.upsertAccount(account);
-      state.status = 'running';
-      this.log('info', `joined tournament #${tournament.id} as player ${account.player_id}`);
-      this.recordJoin(state, tournament);
-      return tournament.id;
-    } catch (e) {
-      if (e instanceof AlreadyJoined) {
-        const t = await this.api.getTournament(tournament.id);
-        const pid = t?.me?.player_id;
-        if (pid) {
-          account.player_id = pid;
-          account.tournament_id = tournament.id;
-          this.store.upsertAccount(account);
-          state.status = 'running';
-          this.log('info', `already joined as player ${pid}`);
-          this.recordJoin(state, tournament);
-          return tournament.id;
-        }
-      }
-      if (e instanceof InsufficientFunds) {
-        this.log('warn', 'insufficient wallet funds to join');
-        state.status = 'needs_funding';
-        return null;
-      }
-      if (e instanceof ApiError && e.status === 422) {
-        // okno zapisów zamknięte / nie można teraz dołączyć — czekamy,
-        // nie wpadamy w error (np. forceId na turniej z miniętym join_until)
-        this.log('info', `join rejected (${e.message}), waiting`);
-        state.status = 'waiting';
-        return null;
-      }
-      throw e;
-    }
-  }
-
   // Historia dołączonych turniejów (dla dashboardu) — deduplikacja po id.
   recordJoin(state, t) {
     const list = state.joinedTournaments ??= [];
@@ -129,26 +33,168 @@ export class BotEngine {
     list.push({ id: t.id, name: t.name, status: t.status, joined_at: now() });
   }
 
-  // Jedna iteracja pętli handlowej.
+  // Konto może grać w wielu turniejach: players = { [tournamentId]: player_id }.
+  // Migracja ze starych pól player_id/tournament_id (pierwszy turniej).
+  ensureAccountPlayers(account) {
+    if (!account.players && account.player_id && account.tournament_id) {
+      account.players = { [account.tournament_id]: account.player_id };
+    }
+    account.players ??= {};
+  }
+
+  // Stan per turniej: state.tournaments = { [tid]: {...} } — migracja ze
+  // starych pojedynczych pól (state.tournament/portfolio/positions/...).
+  ensureStateShape(state) {
+    if (!state.tournaments && state.tournament?.id) {
+      state.tournaments = {
+        [state.tournament.id]: {
+          ...state.tournament,
+          portfolio: state.portfolio ?? null,
+          positions: state.positions ?? [],
+          pending_orders: state.pending_orders ?? [],
+          rank: state.rank ?? null,
+          players_count: state.players_count ?? null,
+          last_decision: state.last_decision ?? null,
+          trading_plan: state.trading_plan ?? null,
+        },
+      };
+    }
+    state.tournaments ??= {};
+  }
+
+  // Dołączanie do turniejów aż do maxTournamentsPerBot: discovery
+  // (forceId | preferStatus | fallbackStatus | can_join), gate opłaty
+  // wpisowej, join z obsługą AlreadyJoined (player_id z /tournaments/{id}),
+  // InsufficientFunds i 422 (okno zamknięte -> pomiń turniej).
+  async joinMore(state) {
+    const account = this.account;
+    this.ensureAccountPlayers(account);
+    const max = this.cfg.account.maxTournamentsPerBot ?? 1;
+    if (Object.keys(account.players).length >= max) return;
+
+    // Przy czekaniu ponawiamy rzadziej (co fundingCheckTicks), żeby nie
+    // spamować serwera odrzuconymi joinami.
+    if (state.status === 'waiting' || state.status === 'needs_funding') {
+      state.funding_counter = (state.funding_counter ?? 0) + 1;
+      if (state.funding_counter % this.cfg.trading.fundingCheckTicks !== 0) return;
+    }
+
+    const list = await this.api.listTournaments();
+    const ts = list?.tournaments ?? [];
+    const joined = new Set(Object.keys(account.players).map(Number));
+    const prefer = this.cfg.tournament.preferStatus;
+    const fallback = this.cfg.tournament.fallbackStatus;
+    const forced = this.cfg.tournament.forceId;
+    const candidates = ts.filter(
+      (t) => t.can_join && !joined.has(Number(t.id)) && (!forced || Number(t.id) === Number(forced)),
+    );
+    const ordered = [
+      ...candidates.filter((t) => t.status === prefer),
+      ...candidates.filter((t) => t.status === fallback),
+      ...candidates,
+    ];
+
+    for (const tournament of ordered) {
+      if (Object.keys(account.players).length >= max) break;
+
+      if (tournament.is_paid) {
+        const fee = toNumber(tournament.entry_fee);
+        if (fee > this.cfg.tournament.maxEntryFeeUsd) {
+          this.log('warn', `entry fee ${fee} > max allowed ${this.cfg.tournament.maxEntryFeeUsd}, skipping`);
+          continue;
+        }
+        const wallet = await this.api.getWallet();
+        const balance = toNumber(wallet?.wallet?.balance);
+        if (balance < fee) {
+          this.log('warn', `needs funding: wallet ${balance} USDT, entry fee ${fee} USDT`);
+          state.status = 'needs_funding';
+          continue;
+        }
+      }
+
+      try {
+        const res = await this.api.joinTournament(tournament.id);
+        account.players[tournament.id] = res.player.id;
+        this.store.upsertAccount(account);
+        state.status = 'running';
+        this.log('info', `joined tournament #${tournament.id} as player ${res.player.id}`);
+        this.recordJoin(state, tournament);
+      } catch (e) {
+        if (e instanceof AlreadyJoined) {
+          const t = await this.api.getTournament(tournament.id);
+          const pid = t?.me?.player_id;
+          if (pid) {
+            account.players[tournament.id] = pid;
+            this.store.upsertAccount(account);
+            state.status = 'running';
+            this.log('info', `already joined as player ${pid}`);
+            this.recordJoin(state, tournament);
+          }
+        } else if (e instanceof InsufficientFunds) {
+          this.log('warn', 'insufficient wallet funds to join');
+          state.status = 'needs_funding';
+          continue;
+        } else if (e instanceof ApiError && e.status === 422) {
+          // okno zapisów zamknięte / nie można teraz dołączyć — pomijamy turniej
+          this.log('info', `join rejected (${e.message}), waiting`);
+          continue;
+        } else {
+          throw e;
+        }
+      }
+    }
+
+    if (!Object.keys(account.players).length && state.status !== 'needs_funding') {
+      this.log('info', 'no joinable tournament, waiting');
+      state.status = 'waiting';
+    }
+  }
+
+  // Jedna iteracja pętli handlowej: dołączanie + cykl per turniej.
   async tick() {
     const account = this.account;
     const state = this.getState();
+    this.ensureAccountPlayers(account);
+    this.ensureStateShape(state);
 
-    // 1. Dołączenie — przy needs_funding / waiting bez player_id ponawiamy
-    // rzadziej (co fundingCheckTicks), żeby nie spamować serwera odrzuconymi joinami
-    if (!account.player_id) {
-      if (state.status === 'needs_funding' || state.status === 'waiting') {
-        state.funding_counter = (state.funding_counter ?? 0) + 1;
-        if (state.funding_counter % this.cfg.trading.fundingCheckTicks !== 0) return;
+    await this.joinMore(state);
+    if (!Object.keys(account.players).length) return;
+
+    let anyRunning = false;
+    let anyFunding = false;
+    let anyError = false;
+    let anyWaiting = false;
+    for (const [tidStr, playerId] of Object.entries(account.players)) {
+      const tid = Number(tidStr);
+      const tstate = state.tournaments[tid] ??= { id: tid, status: 'new' };
+      let st;
+      try {
+        st = await this.#tickTournament(tid, playerId, tstate);
+      } catch (e) {
+        this.log('error', `tournament #${tid} tick failed: ${e.message}`);
+        st = { status: 'error', last_error: e.message };
       }
-      await this.ensureJoined();
-      if (!account.player_id) return;
+      tstate.last_error = st.last_error ?? null;
+      if (st.status === 'running') anyRunning = true;
+      else if (st.status === 'needs_funding') anyFunding = true;
+      else if (st.status === 'error') anyError = true;
+      else anyWaiting = true;
     }
 
-    // 2. Turniej: status + rynki (odświeżane co tick — bot musi wykryć start)
-    let tournament = state.tournament;
+    // Status zagregowany bota (dla dashboardu i sterowania)
+    state.status = anyRunning ? 'running' : anyFunding ? 'needs_funding' : anyError ? 'error' : anyWaiting ? 'waiting' : state.status;
+    state.last_tick = now();
+  }
+
+  // Cykl handlowy jednego turnieju (jeden z maxTournamentsPerBot bota).
+  async #tickTournament(tid, playerId, tstate) {
+    const account = this.account;
+    const state = this.getState();
+
+    // 1. Status turnieju (odświeżany co tick — bot musi wykryć start)
+    let tournament = tstate;
     try {
-      const fresh = (await this.api.getTournament(account.tournament_id))?.tournament ?? null;
+      const fresh = (await this.api.getTournament(tid))?.tournament ?? null;
       if (fresh) {
         tournament = {
           id: fresh.id,
@@ -161,41 +207,36 @@ export class BotEngine {
           lending_fee_daily_percent: fresh.lending_fee_daily_percent,
           markets: fresh.markets ?? [],
         };
-        state.tournament = tournament;
+        Object.assign(tstate, tournament);
         // żywy status w historii dołączonych turniejów
         const hist = state.joinedTournaments ??= [];
-        const h = hist.find((x) => x.id === tournament.id);
+        const h = hist.find((x) => x.id === tid);
         if (h) h.status = tournament.status;
       }
     } catch (e) {
-      this.log('warn', `tournament refresh failed: ${e.message}`);
+      this.log('warn', `tournament ${tid} refresh failed: ${e.message}`);
     }
-    if (!tournament) {
-      this.log('warn', `tournament ${account.tournament_id} not found`);
-      return;
+    if (!tournament.id) {
+      this.log('warn', `tournament ${tid} not found`);
+      return { status: 'error', last_error: `tournament ${tid} not found` };
     }
     if (tournament.status !== 'running') {
-      if (state.status !== 'waiting') {
-        state.status = 'waiting';
-        this.log('info', `tournament ${tournament.status}, waiting for running`);
-      }
-      return;
+      if (tstate.status !== 'waiting') this.log('info', `tournament #${tid} ${tournament.status}, waiting for running`);
+      return { status: 'waiting' };
     }
-    if (state.status !== 'running') {
-      state.status = 'running';
-      this.log('info', 'tournament is running');
-    }
+    if (tstate.status !== 'running') this.log('info', `tournament #${tid} is running`);
+    tstate.status = 'running';
 
     const markets = tournament.markets ?? [];
     if (!markets.length) {
-      this.log('warn', 'tournament has no markets');
-      return;
+      this.log('warn', `tournament #${tid} has no markets`);
+      return { status: 'waiting' };
     }
-    // Plan handlowy bota: rynki ZALEŻĄ OD TURNIEJU — losowy subset z
-    // (config.symbols ∩ rynki turnieju), budżet = maxPositionAmountUsd * los(0.3..1).
-    // Plan przypisany raz na turniej, zapisany w stanie — stabilny między tickami.
-    let plan = state.trading_plan;
-    if (!plan || plan.tournament_id !== tournament.id) {
+
+    // 2. Plan handlowy per turniej: rynki ZALEŻĄ OD TURNIEJU — losowy subset
+    // z (config.symbols ∩ rynki turnieju), budżet = maxPositionAmountUsd * los(0.3..1).
+    let plan = tstate.trading_plan;
+    if (!plan || plan.tournament_id !== tid) {
       const pool = (this.cfg.trading.symbols.length ? this.cfg.trading.symbols : markets.map((m) => m.symbol))
         .filter((s) => markets.some((m) => m.symbol === s));
       const candidates = pool.length ? pool : markets.map((m) => m.symbol);
@@ -203,18 +244,18 @@ export class BotEngine {
       const minFrac = this.cfg.trading.budgetMinFraction ?? 0.3;
       const frac = minFrac + Math.random() * (1 - minFrac);
       plan = {
-        tournament_id: tournament.id,
+        tournament_id: tid,
         symbols: shuffle(candidates).slice(0, n),
         maxPositionAmountUsd: Math.max(50, Math.round(this.cfg.trading.maxPositionAmountUsd * frac)),
       };
-      state.trading_plan = plan;
-      this.log('info', `plan: ${plan.symbols.join(', ')}, budżet do ${plan.maxPositionAmountUsd} USDT`);
+      tstate.trading_plan = plan;
+      this.log('info', `tournament #${tid} plan: ${plan.symbols.join(', ')}, budżet do ${plan.maxPositionAmountUsd} USDT`);
     }
     const symbols = plan.symbols;
 
     // 3. Portfolio + transakcje (realized PnL z ledgera)
-    const port = await this.api.getPortfolio(account.player_id);
-    const tx = await this.api.getMyTransactions(account.player_id);
+    const port = await this.api.getPortfolio(playerId);
+    const tx = await this.api.getMyTransactions(playerId);
     const realized = (tx?.transactions ?? [])
       .filter((t) => t.type === 'close')
       .reduce((s, t) => s + toNumber(t.pnl_realized), 0);
@@ -224,11 +265,11 @@ export class BotEngine {
       unrealized_pnl: port?.player?.unrealized_pnl ?? null,
       realized_pnl: realized.toFixed(8),
     };
-    state.portfolio = portfolio;
-    state.positions = port?.positions ?? [];
+    tstate.portfolio = portfolio;
+    tstate.positions = port?.positions ?? [];
 
-    const myOrders = await this.api.getMyOrders(account.player_id);
-    state.pending_orders = (myOrders?.orders ?? [])
+    const myOrders = await this.api.getMyOrders(playerId);
+    tstate.pending_orders = (myOrders?.orders ?? [])
       .filter((o) => o.status === 'pending')
       .map((o) => ({ id: o.id, type: o.type, side: o.side, market_id: o.market_id, position_id: o.position_id, price: o.price, qty: o.qty }));
 
@@ -249,16 +290,16 @@ export class BotEngine {
       }
     }
     if (!Object.keys(prices).length) {
-      this.log('warn', 'no prices available, skipping tick');
-      return;
+      this.log('warn', `no prices available for tournament #${tid}, skipping tick`);
+      return { status: 'waiting' };
     }
 
     // 5. Ranking (player_id w rankingu to userId!)
     try {
-      const rank = await this.api.getRanking(account.tournament_id);
+      const rank = await this.api.getRanking(tid);
       const entry = (rank?.ranking ?? []).find((r) => r.player_id === account.user_id);
-      state.rank = entry?.rank ?? null;
-      state.players_count = (rank?.ranking ?? []).length || null;
+      tstate.rank = entry?.rank ?? null;
+      tstate.players_count = (rank?.ranking ?? []).length || null;
     } catch (e) {
       this.log('warn', `ranking failed: ${e.message}`);
     }
@@ -268,8 +309,8 @@ export class BotEngine {
     const effTrading = { ...this.cfg.trading, maxPositionAmountUsd: plan.maxPositionAmountUsd };
     const ctx = {
       markets: markets.filter((m) => symbols.includes(m.symbol)),
-      positions: state.positions,
-      pendingOrders: state.pending_orders,
+      positions: tstate.positions,
+      pendingOrders: tstate.pending_orders,
       portfolio,
       prices,
       tournament,
@@ -279,35 +320,33 @@ export class BotEngine {
     const user = buildUserPrompt({
       tournament,
       portfolio,
-      positions: state.positions,
-      pendingOrders: state.pending_orders,
+      positions: tstate.positions,
+      pendingOrders: tstate.pending_orders,
       candlesBySymbol,
       prices,
-      rank: state.rank,
-      playersCount: state.players_count,
+      rank: tstate.rank,
+      playersCount: tstate.players_count,
     });
     const llmRes = await this.llm.decide({ system, user, ctx });
     const v = validateDecision(llmRes.decision, ctx);
-    state.last_decision = {
+    tstate.last_decision = {
       action: v.decision.action,
       ...(v.error ? { error: v.error } : {}),
       raw: typeof llmRes.raw === 'string' ? llmRes.raw.slice(0, 400) : null,
       at: now(),
     };
-    if (!v.ok) this.log('warn', `decision invalid: ${v.error}`);
-    else if (v.decision.action !== 'hold') this.log('info', `decision: ${JSON.stringify(v.decision)}`);
+    if (!v.ok) this.log('warn', `tournament #${tid} decision invalid: ${v.error}`);
+    else if (v.decision.action !== 'hold') this.log('info', `tournament #${tid} decision: ${JSON.stringify(v.decision)}`);
 
     // 7. Egzekucja
     if (v.decision.action !== 'hold') {
-      await this.executeDecision(v.decision, ctx);
+      await this.executeDecision(v.decision, ctx, playerId);
     }
 
-    state.last_tick = now();
-    state.last_error = null;
+    return { status: 'running', last_error: null };
   }
 
-  async executeDecision(decision, ctx) {
-    const playerId = this.account.player_id;
+  async executeDecision(decision, ctx, playerId) {
     try {
       if (decision.action === 'open') {
         const market = ctx.markets.find((m) => m.symbol === decision.market_symbol);

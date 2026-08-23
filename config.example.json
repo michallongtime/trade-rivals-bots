@@ -14,6 +14,7 @@
     "emailDomain": "tradebot.local",
     "password": "DefaultPass123!",
     "count": 0,
+    "maxTournamentsPerBot": 4,
     "nicknameMode": "realistic",
     "nameStyle": "mixed",
     "emailDomains": ["trade-strategy.com"]

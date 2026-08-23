@@ -232,7 +232,7 @@ console.log('\nC2. join zamknięty -> waiting:');
   const api = new ApiClient({ cfg, account, offline: true, sim });
   await api.register('Closed_Probe', 'closed_probe@y.z', 'pppppppp');
   const engine = new BotEngine({ account, api, llm: new LlmClient({ provider: 'mock' }), store, cfg, botId: 'b-closed' });
-  await engine.ensureJoined();
+  await engine.joinMore(store.getBotState('b-closed'));
   ok('join 422 -> status waiting, bez player_id', () => {
     assert.strictEqual(store.getBotState('b-closed').status, 'waiting');
     assert.strictEqual(account.player_id, null);
@@ -483,6 +483,75 @@ console.log('\nH. Kamuflaż aktywności:');
       const wait = Math.max(5000, Math.round(45000 * j));
       assert.ok(wait >= 22500 && wait <= 67500, `wait=${wait}`);
     }
+  });
+}
+
+// ============ I. Multi-turnieje (jeden bot gra w maxTurniejów) ============
+console.log('\nI. Multi-turnieje:');
+{
+  // await — sekcja jest ostatnia przed synchronicznym cleanupem; bez tego
+  // proces.exit zdąży ubić niezakończony test
+  await okAsync('bot dołącza do 2 turniejów i handluje w obu', async () => {
+    const T = {
+      1: { id: 1, name: 'Alpha', status: 'running', can_join: true, markets: [{ id: 1, symbol: 'BTCUSDT' }] },
+      2: { id: 2, name: 'Beta', status: 'running', can_join: true, markets: [{ id: 1, symbol: 'BTCUSDT' }] },
+    };
+    const srv = http.createServer(async (req, res) => {
+      const url = new URL(req.url, 'http://x');
+      const json = (code, obj) => {
+        const b = JSON.stringify(obj);
+        res.writeHead(code, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(b) });
+        res.end(b);
+      };
+      if (req.method === 'POST' && url.pathname === '/api/auth/login') { for await (const c of req) { /* body */ } return json(200, { token: 'tok-m', user: { id: 77 } }); }
+      if (req.method === 'GET' && url.pathname === '/api/tournaments') return json(200, { tournaments: Object.values(T) });
+      let m = url.pathname.match(/^\/api\/tournaments\/(\d+)\/join$/);
+      if (req.method === 'POST' && m) { for await (const c of req) { /* body */ } return json(200, { player: { id: 100 + Number(m[1]) } }); }
+      m = url.pathname.match(/^\/api\/tournaments\/(\d+)$/);
+      if (req.method === 'GET' && m) return json(200, { tournament: T[m[1]] });
+      if (req.method === 'POST' && /^\/api\/portfolios\/\d+\/orders$/.test(url.pathname)) {
+        for await (const c of req) { /* body */ }
+        return json(200, { order: { id: 11, position_id: 1 } });
+      }
+      if (req.method === 'GET' && url.pathname.startsWith('/api/portfolios/')) {
+        if (url.pathname.endsWith('/orders')) return json(200, { orders: [] });
+        if (url.pathname.endsWith('/transactions')) return json(200, { transactions: [] });
+        return json(200, { player: { equity: '10000.00000000', cash_balance: '10000.00000000', unrealized_pnl: '0.00000000' }, positions: [] });
+      }
+      if (req.method === 'GET' && url.pathname === '/api/prices/BTCUSDT') return json(200, { price: '65000.00' });
+      if (req.method === 'GET' && url.pathname === '/api/candles') return json(200, { candles: [] });
+      m = url.pathname.match(/^\/api\/tournaments\/(\d+)\/ranking$/);
+      if (req.method === 'GET' && m) return json(200, { ranking: [{ rank: 1, player_id: 77 }] });
+      return json(404, { message: 'not found' });
+    });
+    await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+
+    const cfgI = loadConfig();
+    cfgI.account.maxTournamentsPerBot = 2;
+    cfgI.trading.intervalMs = 1000;
+    const store = new Store({ accountsFile: join(tmp, 'multi-accounts.json'), stateFile: join(tmp, 'multi-state.json') });
+    const account = { id: 'b-multi', nickname: 'Multi', email: 'm@x.y', password: 'p', token: 'tok-m', user_id: 77, player_id: null, tournament_id: null, players: {} };
+    const api = new ApiClient({
+      cfg: { ...cfgI, api: { ...cfgI.api, baseUrl: `http://127.0.0.1:${srv.address().port}/api` } },
+      account,
+    });
+    const engine = new BotEngine({ account, api, llm: new LlmClient({ provider: 'mock' }), store, cfg: cfgI, botId: 'b-multi' });
+    await engine.tick();
+    await engine.tick();
+
+    ok('dołączył do 2 turniejów (players: tid -> player_id)', () => {
+      assert.deepStrictEqual(Object.keys(account.players).sort(), ['1', '2']);
+      assert.strictEqual(account.players[1], 101);
+      assert.strictEqual(account.players[2], 102);
+    });
+    const st = store.getBotState('b-multi');
+    ok('stan per turniej: 2 wpisy running', () => {
+      assert.strictEqual(Object.keys(st.tournaments).length, 2);
+      assert.ok(Object.values(st.tournaments).every((t) => t.status === 'running'));
+    });
+    ok('bot aggregate = running', () => assert.strictEqual(st.status, 'running'));
+    ok('historia turniejów ma 2 wpisy', () => assert.strictEqual(st.joinedTournaments.length, 2));
+    srv.close();
   });
 }
 

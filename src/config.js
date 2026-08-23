@@ -31,6 +31,7 @@ const DEFAULTS = {
     password: 'DefaultPass123!',
     registerIntervalMs: 6500, // >= 6000 (limit 10 rejestracji/min)
     count: 2, // ile kont utworzyć automatycznie przy pierwszym starcie (0 = nie)
+    maxTournamentsPerBot: 4, // w ilu turniejach równocześnie gra jeden bot
     nicknameMode: 'realistic', // "realistic" (ludzkie nicki/emaile) | "simple" (bot_xxx)
     nameStyle: 'mixed', // dla realistic: "mixed" | "gamer" | "polish"
     emailDomains: null, // opcjonalnie: własna lista domen (null = domyślna z names.js)
