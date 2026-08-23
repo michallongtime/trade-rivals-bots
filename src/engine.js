@@ -335,6 +335,20 @@ export class BotEngine {
       raw: typeof llmRes.raw === 'string' ? llmRes.raw.slice(0, 400) : null,
       at: now(),
     };
+
+    // Podgląd wymian AI (dashboard): pełny prompt + surowa odpowiedź,
+    // ostatnie 10 per bot; licznik zapytań per bot (monotoniczny).
+    state.ai_requests = (state.ai_requests ?? 0) + 1;
+    const exchanges = state.ai_exchanges ??= [];
+    exchanges.push({
+      at: now(),
+      tournament_id: tid,
+      tournament_name: tournament.name ?? null,
+      system,
+      user,
+      response: typeof llmRes.raw === 'string' ? llmRes.raw : null,
+    });
+    if (exchanges.length > 10) exchanges.splice(0, exchanges.length - 10);
     if (!v.ok) this.log('warn', `tournament #${tid} decision invalid: ${v.error}`);
     else if (v.decision.action !== 'hold') this.log('info', `tournament #${tid} decision: ${JSON.stringify(v.decision)}`);
 
