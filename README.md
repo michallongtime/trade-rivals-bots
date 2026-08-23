@@ -55,7 +55,9 @@ Po starcie otwórz **http://127.0.0.1:3000** — dashboard:
 - tabela botów: equity, PnL, ranking, pozycje, ostatnia decyzja AI, błędy,
 - akcje **⏸ wstrzymaj / ▶ wznów / 🗑 usuń** (usuń = logout tokenu + wykluczenie),
 - klik w wiersz → log bota (200 ostatnich wpisów),
-- odświeżanie co 3 s.
+- odświeżanie co 3 s,
+- logowanie loginem, hasłem i tokenem, gdy skonfigurowano `server.auth`
+  (poza `127.0.0.1` jest wymagane — bez niego serwer nie wstanie).
 
 ## Konfiguracja (`config.json`)
 
@@ -93,7 +95,17 @@ Po starcie otwórz **http://127.0.0.1:3000** — dashboard:
     "maxOpenPositions": 3,     // max równocześnie otwartych pozycji
     "maxLeverage": 10          // max dźwignia (i tak ograniczona max_leverage turnieju)
   },
-  "server": { "host": "127.0.0.1", "port": 3000 }
+  "server": {
+    "host": "127.0.0.1",   // 0.0.0.0 na produkcji (w kontenerze)
+    "port": 3000,          // na produkcji: 4001
+    "auth": {              // wymagane przy bindzie poza 127.0.0.1 (fail-closed)
+      "user": "",          // login do dashboardu (Basic Auth)
+      "pass": "",          // hasło do dashboardu (Basic Auth)
+      "token": "",         // token (nagłówek X-Auth-Token)
+      "maxAttempts": 4,    // tyle błędnych prób z jednego IP -> blokada
+      "lockMs": 1800000    // czas blokady (30 min)
+    }
+  }
 }
 ```
 
@@ -130,12 +142,24 @@ Po starcie otwórz **http://127.0.0.1:3000** — dashboard:
 ## Testy
 
 ```bash
-npm test        # 25 testów: storage, walidacja decyzji, cykl bota (offline + HTTP), 429/401
+npm test        # 58 testów: storage, walidacja decyzji, cykl bota (offline + HTTP), 429/401, autoryzacja
 npm run stub    # osobno: atrapa API na http://127.0.0.1:8081 (do ręcznych prób)
 ```
 
 Testy używają wbudowanego symulatora (`src/mock.js`) i nie dotykają prawdziwego
 serwera ani sieci.
+
+## Wdrożenie produkcyjne (Docker)
+
+Aplikację można wdrożyć na VPS jako kontener Docker: publiczny port, autoryzacja
+dashboardu, auto-restart po awarii i po rebootcie. Pełny runbook — od pierwszego
+klonowania repo po rutynowy release — znajdziesz w **[DEPLOY.md](DEPLOY.md)**.
+
+Skrót: `Dockerfile` + `docker-compose.yml` (port `4001`, `restart: unless-stopped`,
+wolumeny `config.json` i `data/`), a `scripts/watchdog.mjs` (PID1 w kontenerze)
+sprawdza `/api/health` co 30 s i po 3 kolejnych błędach restartuje proces.
+Wszystkie trasy `/api/*` wymagają **Basic Auth oraz** nagłówka `X-Auth-Token`;
+po 4 błędnych próbach z jednego IP kolejne są blokowane na 30 min.
 
 ## Pliki
 

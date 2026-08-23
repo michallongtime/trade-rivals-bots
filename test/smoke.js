@@ -18,6 +18,8 @@ import { generateNickname, generateEmail, transliterate } from '../src/names.js'
 import { loadConfig } from '../src/config.js';
 import { loadTargets, listTargets, resolveTargetName, applyTargetOverrides } from '../src/targets.js';
 import { startStub } from './stub-server.js';
+import { createAuthGuard, assertAuthConfig, parseBasic } from '../src/auth.js';
+import { createServer } from '../src/server.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let passed = 0;
@@ -322,6 +324,107 @@ console.log('\nF. Targety:');
     assert.strictEqual(sProd.getAccount('b-1'), undefined);
   });
   rmSync(d, { recursive: true, force: true });
+}
+
+// ============ G. Autoryzacja dashboardu (auth.js + server) ============
+console.log('\nG. Autoryzacja (Basic + X-Auth-Token + lockout):');
+{
+  const AUTH = { user: 'admin', pass: 'pass', token: 'tok', maxAttempts: 4, lockMs: 1800000 };
+  const guard = createAuthGuard({ server: { auth: AUTH } });
+  const req = (ip, auth, token) => ({
+    socket: { remoteAddress: ip },
+    headers: { authorization: auth, 'x-auth-token': token },
+  });
+  const basic = (u, p) => 'Basic ' + Buffer.from(`${u}:${p}`).toString('base64');
+
+  ok('parseBasic: poprawny nagłówek', () => {
+    assert.deepStrictEqual(parseBasic(basic('user', 'pass')), { user: 'user', pass: 'pass' });
+  });
+  ok('parseBasic: hasło z dwukropkiem', () => {
+    assert.deepStrictEqual(parseBasic(basic('user', 'pa:ss')), { user: 'user', pass: 'pa:ss' });
+  });
+  ok('parseBasic: śmieci -> null', () => {
+    assert.strictEqual(parseBasic('Bearer xyz'), null);
+    assert.strictEqual(parseBasic(undefined), null);
+  });
+  ok('poprawne dane -> allowed', () => {
+    assert.strictEqual(guard(req('1.2.3.4', basic('admin', 'pass'), 'tok')).allowed, true);
+  });
+  ok('brak tokenu -> 401', () => {
+    const r = guard(req('1.2.3.5', basic('admin', 'pass'), null));
+    assert.strictEqual(r.allowed, false);
+    assert.strictEqual(r.status, 401);
+  });
+  ok('zły user -> 401', () => {
+    assert.strictEqual(guard(req('1.2.3.6', basic('nope', 'pass'), 'tok')).status, 401);
+  });
+  ok('4 błędy z IP -> 429 nawet z poprawnymi danymi (5. próba)', () => {
+    const g = createAuthGuard({ server: { auth: AUTH } });
+    for (let i = 0; i < 4; i++) {
+      const r = g(req('9.9.9.9', basic('zly', 'user'), 'zly'));
+      assert.strictEqual(r.status, 401);
+    }
+    const r5 = g(req('9.9.9.9', basic('admin', 'pass'), 'tok'));
+    assert.strictEqual(r5.status, 429);
+    assert.ok(r5.retryAfter > 0 && r5.retryAfter <= 1800, `retryAfter: ${r5.retryAfter}`);
+  });
+  ok('inne IP niezablokowane', () => {
+    assert.strictEqual(guard(req('8.8.8.8', basic('admin', 'pass'), 'tok')).allowed, true);
+  });
+  ok('lock wygasa -> poprawne dane wchodzą', async () => {
+    const g = createAuthGuard({ server: { auth: { ...AUTH, lockMs: 120 } } });
+    for (let i = 0; i < 4; i++) g(req('7.7.7.7', basic('zly', 'user'), 'zly'));
+    assert.strictEqual(g(req('7.7.7.7', basic('admin', 'pass'), 'tok')).status, 429);
+    await sleep(200);
+    assert.strictEqual(g(req('7.7.7.7', basic('admin', 'pass'), 'tok')).allowed, true);
+  });
+  ok('sukces resetuje licznik błędów', () => {
+    const g = createAuthGuard({ server: { auth: { ...AUTH, maxAttempts: 2 } } });
+    g(req('6.6.6.6', basic('zly', 'user'), 'zly')); // 1 błąd
+    assert.strictEqual(g(req('6.6.6.6', basic('admin', 'pass'), 'tok')).allowed, true); // reset
+    assert.strictEqual(g(req('6.6.6.6', basic('zly', 'user'), 'zly')).status, 401); // znowu 1. błąd
+    assert.strictEqual(g(req('6.6.6.6', basic('zly', 'user'), 'zly')).status, 401); // 2. błąd uzbraja lock
+    assert.strictEqual(g(req('6.6.6.6', basic('admin', 'pass'), 'tok')).status, 429); // kolejna -> 429 mimo dobrych danych
+  });
+  ok('brak auth w configu = guard wyłączony', () => {
+    const g = createAuthGuard({ server: { host: '127.0.0.1' } });
+    assert.strictEqual(g(req('1.1.1.1', null, null)).allowed, true);
+  });
+  ok('assertAuthConfig: 0.0.0.0 bez auth -> throw', () => {
+    assert.throws(() => assertAuthConfig({ server: { host: '0.0.0.0' } }), /server\.auth/);
+  });
+  ok('assertAuthConfig: loopback bez auth -> OK', () => {
+    assert.doesNotThrow(() => assertAuthConfig({ server: { host: '127.0.0.1' } }));
+  });
+  ok('assertAuthConfig: 0.0.0.0 z kompletnym auth -> OK', () => {
+    assert.doesNotThrow(() => assertAuthConfig({ server: { host: '0.0.0.0', auth: AUTH } }));
+  });
+
+  // --- integracja: prawdziwy createServer (port 0) ---
+  okAsync('HTTP: health publiczne, status 401/200, lockout po 2 błędach', async () => {
+    const store = { botViews: () => [], accounts: { accounts: [] }, getAccount: () => undefined, getBotState: () => ({ log: [] }) };
+    const manager = { registrationQueueLen: () => 0 };
+    const cfgG = loadConfig();
+    cfgG.server = { host: '127.0.0.1', port: 0, auth: { user: 'admin', pass: 'pass', token: 'tok', maxAttempts: 2, lockMs: 60000 } };
+    const srv = createServer({ manager, store, cfg: cfgG, offline: false, dryRun: true, startedAt: Date.now(), targetName: 'test' });
+    await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+    const base = `http://127.0.0.1:${srv.address().port}`;
+    const get = async (path, headers = {}) => fetch(base + path, { headers });
+
+    assert.strictEqual((await get('/api/health')).status, 200, 'health bez creds');
+    assert.strictEqual((await get('/api/status')).status, 401, 'status bez creds (1. błąd)');
+    const okStatus = await get('/api/status', { Authorization: basic('admin', 'pass'), 'X-Auth-Token': 'tok' });
+    assert.strictEqual(okStatus.status, 200, 'status z creds (reset licznika)');
+    assert.strictEqual((await get('/')).status, 200, 'skorupa HTML publiczna');
+    assert.strictEqual((await get('/api/status', { Authorization: basic('zly', 'zly'), 'X-Auth-Token': 'zly' })).status, 401, 'złe dane (1. błąd)');
+    const locked = await get('/api/status', { Authorization: basic('zly', 'zly'), 'X-Auth-Token': 'zly' });
+    assert.strictEqual(locked.status, 429, '2. błąd -> 429');
+    assert.ok(Number(locked.headers.get('retry-after')) > 0, 'Retry-After nagłówek');
+    const stillLocked = await get('/api/status', { Authorization: basic('admin', 'pass'), 'X-Auth-Token': 'tok' });
+    assert.strictEqual(stillLocked.status, 429, 'zablokowany IP dostaje 429 nawet z poprawnymi danymi');
+
+    srv.close();
+  });
 }
 
 // ============ cleanup ============
