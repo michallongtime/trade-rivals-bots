@@ -366,6 +366,13 @@ console.log('\nG. Autoryzacja (Basic + X-Auth-Token + lockout):');
     assert.strictEqual(r.allowed, false);
     assert.strictEqual(r.status, 401);
   });
+  ok('żądania bez nagłówka Authorization nie liczą się do blokady', () => {
+    const g = createAuthGuard({ server: { auth: { ...AUTH, maxAttempts: 2 } } });
+    for (let i = 0; i < 10; i++) {
+      assert.strictEqual(g(req('5.5.5.5', null, null)).status, 401, `puste ${i + 1}`);
+    }
+    assert.strictEqual(g(req('5.5.5.5', basic('admin', 'pass'), 'tok')).allowed, true, 'po 10 pustych 401 poprawne dane nadal wchodzą');
+  });
   ok('zły user -> 401', () => {
     assert.strictEqual(guard(req('1.2.3.6', basic('nope', 'pass'), 'tok')).status, 401);
   });
@@ -423,13 +430,16 @@ console.log('\nG. Autoryzacja (Basic + X-Auth-Token + lockout):');
     const get = async (path, headers = {}) => fetch(base + path, { headers });
 
     assert.strictEqual((await get('/api/health')).status, 200, 'health bez creds');
-    assert.strictEqual((await get('/api/status')).status, 401, 'status bez creds (1. błąd)');
+    assert.strictEqual((await get('/api/status')).status, 401, 'status bez creds (puste żądania nie liczą się do blokady)');
+    assert.strictEqual((await get('/api/status')).status, 401, 'kolejne puste żądanie też nie liczy się do blokady');
     const okStatus = await get('/api/status', { Authorization: basic('admin', 'pass'), 'X-Auth-Token': 'tok' });
-    assert.strictEqual(okStatus.status, 200, 'status z creds (reset licznika)');
+    assert.strictEqual(okStatus.status, 200, 'status z creds (po pustych żądaniach nadal wchodzi)');
     assert.strictEqual((await get('/')).status, 200, 'skorupa HTML publiczna');
     assert.strictEqual((await get('/api/status', { Authorization: basic('zly', 'zly'), 'X-Auth-Token': 'zly' })).status, 401, 'złe dane (1. błąd)');
-    const locked = await get('/api/status', { Authorization: basic('zly', 'zly'), 'X-Auth-Token': 'zly' });
-    assert.strictEqual(locked.status, 429, '2. błąd -> 429');
+    const armed = await get('/api/status', { Authorization: basic('zly', 'zly'), 'X-Auth-Token': 'zly' });
+    assert.strictEqual(armed.status, 401, '2. błąd uzbraja lock (samo żądanie wciąż 401)');
+    const locked = await get('/api/status', { Authorization: basic('admin', 'pass'), 'X-Auth-Token': 'tok' });
+    assert.strictEqual(locked.status, 429, 'kolejna próba -> 429');
     assert.ok(Number(locked.headers.get('retry-after')) > 0, 'Retry-After nagłówek');
     const stillLocked = await get('/api/status', { Authorization: basic('admin', 'pass'), 'X-Auth-Token': 'tok' });
     assert.strictEqual(stillLocked.status, 429, 'zablokowany IP dostaje 429 nawet z poprawnymi danymi');

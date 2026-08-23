@@ -66,8 +66,11 @@ export function createAuthGuard(cfg) {
       return { allowed: false, status: 429, retryAfter: Math.ceil((until - Date.now()) / 1000) };
     }
     const b = parseBasic(req.headers.authorization);
+    // Bez nagłówka Authorization to NIE jest próba logowania (np. poll dashboardu
+    // bez creds) — 401 bez licznika; inaczej 4 puste żądania zablokowałyby IP.
+    if (!b) return { allowed: false, status: 401, retryAfter: null };
     const t = req.headers['x-auth-token'];
-    const good = b && safeEqual(b.user, user) && safeEqual(b.pass, pass)
+    const good = safeEqual(b.user, user) && safeEqual(b.pass, pass)
       && typeof t === 'string' && safeEqual(t, token);
     if (!good) { fail(ip); return { allowed: false, status: 401, retryAfter: null }; }
     failures.delete(ip); // sukces resetuje licznik

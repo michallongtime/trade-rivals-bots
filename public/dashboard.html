@@ -151,6 +151,10 @@ const CREDS_KEY = 'tcbot_creds';
 const getCreds = () => { try { return JSON.parse(sessionStorage.getItem(CREDS_KEY) || 'null'); } catch { return null; } };
 const setCreds = (c) => sessionStorage.setItem(CREDS_KEY, JSON.stringify(c));
 const clearCreds = () => sessionStorage.removeItem(CREDS_KEY);
+let refreshTimer = null;
+let lockTimer = null;
+function startAutoRefresh() { if (!refreshTimer) refreshTimer = setInterval(load, 3000); }
+function stopAutoRefresh() { if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; } }
 function showLogin(msg, locked) { if (msg) $('lErr').textContent = msg; $('lBtn').disabled = !!locked; $('login').hidden = false; $('logoutBtn').hidden = true; }
 function hideLogin() { $('login').hidden = true; $('lErr').textContent = ''; $('logoutBtn').hidden = !getCreds(); }
 
@@ -163,15 +167,28 @@ async function api(path, opts = {}) {
     headers['X-Auth-Token'] = c.token;
   }
   const r = await fetch(path, { ...opts, headers });
-  if (r.status === 401) { clearCreds(); showLogin('Nieprawidłowe dane — zaloguj się ponownie.'); throw new Error('unauthorized'); }
+  if (r.status === 401) {
+    // złe dane: przestań pollować (żądania bez creds nie mogą podbijać licznika),
+    // czekamy aż użytkownik zaloguje się ponownie
+    clearCreds();
+    stopAutoRefresh();
+    showLogin('Nieprawidłowe dane — zaloguj się ponownie.');
+    throw new Error('unauthorized');
+  }
   if (r.status === 429) {
-    const min = Math.ceil(Number(r.headers.get('Retry-After') || 60) / 60);
+    // blokada: zatrzymaj polling na czas locka, wznów automatycznie po jego końcu
+    const retryAfter = Number(r.headers.get('Retry-After') || 1800);
+    const min = Math.ceil(retryAfter / 60);
+    stopAutoRefresh();
+    if (lockTimer) clearTimeout(lockTimer);
+    lockTimer = setTimeout(() => { lockTimer = null; startAutoRefresh(); load(); }, (retryAfter + 3) * 1000);
     showLogin(`Zbyt wiele prób logowania. Spróbuj za ~${min} min.`, true);
     throw new Error('locked');
   }
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j.error || (j.errors ? j.errors.join('; ') : 'HTTP ' + r.status));
-  hideLogin(); // sukces (np. po wygaśnięciu blokady poll co 3 s sam schowa overlay)
+  hideLogin(); // sukces — schowaj overlay (jeśli był) i wznów polling
+  startAutoRefresh();
   return j;
 }
 
@@ -379,8 +396,8 @@ $('lBtn').onclick = async () => {
   hideLogin();
   load();
 };
-if (!getCreds()) showLogin(); // overlay na starcie; poll co 3 s pokaże go też po 401
-setInterval(load, 3000);
+if (!getCreds()) showLogin(); // overlay na starcie
+else startAutoRefresh();     // są creds — polling wznawia się po sukcesie load()
 load();
 </script>
 </body>
