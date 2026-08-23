@@ -182,6 +182,8 @@ async function api(path, opts = {}) {
     // czekamy aż użytkownik zaloguje się ponownie
     clearCreds();
     stopAutoRefresh();
+    $('aiInstruction').value = '';
+    $('aiInterval').value = 0;
     showLogin('Nieprawidłowe dane — zaloguj się ponownie.');
     throw new Error('unauthorized');
   }
@@ -503,6 +505,7 @@ $('lBtn').onclick = async () => {
   if (!user || !pass || !token) { $('lErr').textContent = 'Wypełnij wszystkie pola.'; return; }
   setCreds({ user, pass, token });
   hideLogin();
+  loadAiSettings(); // wczytaj aktualnie obowiązującą instrukcję do textarea
   load();
 };
 // --- ustawienia AI (instrukcja + cooldown pytań) ---
@@ -532,7 +535,10 @@ $('saveAiBtn').onclick = async () => {
 loadAiSettings();
 
 if (!getCreds()) showLogin(); // overlay na starcie
-else startAutoRefresh();     // są creds — polling wznawia się po sukcesie load()
+else {
+  startAutoRefresh();     // są creds — polling wznawia się po sukcesie load()
+  loadAiSettings();       // textarea pokazuje aktualnie obowiązującą instrukcję
+}
 load();
 </script>
 </body>
