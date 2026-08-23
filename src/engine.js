@@ -85,9 +85,16 @@ export class BotEngine {
     const prefer = this.cfg.tournament.preferStatus;
     const fallback = this.cfg.tournament.fallbackStatus;
     const forced = this.cfg.tournament.forceId;
-    const candidates = ts.filter(
-      (t) => t.can_join && !joined.has(Number(t.id)) && (!forced || Number(t.id) === Number(forced)),
-    );
+    // can_join bywa false mimo otwartych zapisów (aplikacja turniejowa) —
+    // kandydat = status zgodny z preferencją LUB can_join; ostateczną prawdę
+    // mówi endpoint join (422 = pomijamy turniej na 30 min).
+    const candidates = ts.filter((t) => {
+      if (joined.has(Number(t.id))) return false;
+      if (forced && Number(t.id) !== Number(forced)) return false;
+      const rejected = state.rejected_joins?.[t.id];
+      if (rejected && Date.now() - rejected < 1800000) return false;
+      return t.can_join || t.status === prefer || t.status === fallback;
+    });
     const ordered = [
       ...candidates.filter((t) => t.status === prefer),
       ...candidates.filter((t) => t.status === fallback),
@@ -135,8 +142,11 @@ export class BotEngine {
           state.status = 'needs_funding';
           continue;
         } else if (e instanceof ApiError && e.status === 422) {
-          // okno zapisów zamknięte / nie można teraz dołączyć — pomijamy turniej
-          this.log('info', `join rejected (${e.message}), waiting`);
+          // okno zapisów zamknięte / nie można teraz dołączyć — pomijamy
+          // ten turniej na 30 min (żeby nie spamować odrzuconymi joinami)
+          state.rejected_joins ??= {};
+          state.rejected_joins[tournament.id] = Date.now();
+          this.log('info', `join rejected (${e.message}), skipping for 30 min`);
           continue;
         } else {
           throw e;

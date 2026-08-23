@@ -112,6 +112,8 @@ export class Store {
   botViews() {
     return Object.values(this.state.bots).map((s) => {
       const tlist = Object.values(s.tournaments ?? {});
+      // lista turniejów alfabetycznie A→Z (stable wg nazwy)
+      tlist.sort((a, b) => String(a.name ?? '').localeCompare(String(b.name ?? ''), 'pl'));
       const primary = tlist.find((t) => t.status === 'running') ?? tlist[0] ?? null;
       return {
         id: s.id,
@@ -126,7 +128,7 @@ export class Store {
         positions: primary?.positions ?? s.positions ?? [],
         pending_orders: primary?.pending_orders ?? s.pending_orders ?? [],
         trading_plan: primary?.trading_plan ?? s.trading_plan ?? null,
-        joinedTournaments: s.joinedTournaments ?? [],
+        joinedTournaments: [...(s.joinedTournaments ?? [])].sort((a, b) => String(a.name ?? '').localeCompare(String(b.name ?? ''), 'pl')),
         tournaments: tlist.map((t) => ({
           id: t.id,
           name: t.name,

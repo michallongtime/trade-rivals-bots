@@ -513,8 +513,9 @@ console.log('\nI. Multi-turnieje:');
   // proces.exit zdąży ubić niezakończony test
   await okAsync('bot dołącza do 2 turniejów i handluje w obu', async () => {
     const T = {
-      1: { id: 1, name: 'Alpha', status: 'running', can_join: true, markets: [{ id: 1, symbol: 'BTCUSDT' }] },
-      2: { id: 2, name: 'Beta', status: 'running', can_join: true, markets: [{ id: 1, symbol: 'BTCUSDT' }] },
+      1: { id: 1, name: 'Zeta', status: 'running', can_join: true, markets: [{ id: 1, symbol: 'BTCUSDT' }] },
+      2: { id: 2, name: 'Alpha', status: 'running', can_join: false, markets: [{ id: 1, symbol: 'BTCUSDT' }] },
+      3: { id: 3, name: 'Gamma', status: 'running', can_join: true, markets: [{ id: 1, symbol: 'BTCUSDT' }] },
     };
     const srv = http.createServer(async (req, res) => {
       const url = new URL(req.url, 'http://x');
@@ -526,7 +527,11 @@ console.log('\nI. Multi-turnieje:');
       if (req.method === 'POST' && url.pathname === '/api/auth/login') { for await (const c of req) { /* body */ } return json(200, { token: 'tok-m', user: { id: 77 } }); }
       if (req.method === 'GET' && url.pathname === '/api/tournaments') return json(200, { tournaments: Object.values(T) });
       let m = url.pathname.match(/^\/api\/tournaments\/(\d+)\/join$/);
-      if (req.method === 'POST' && m) { for await (const c of req) { /* body */ } return json(200, { player: { id: 100 + Number(m[1]) } }); }
+      if (req.method === 'POST' && m) {
+        for await (const c of req) { /* body */ }
+        if (m[1] === '3') return json(422, { message: 'registration window closed' });
+        return json(200, { player: { id: 100 + Number(m[1]) } });
+      }
       m = url.pathname.match(/^\/api\/tournaments\/(\d+)$/);
       if (req.method === 'GET' && m) return json(200, { tournament: T[m[1]] });
       if (req.method === 'POST' && /^\/api\/portfolios\/\d+\/orders$/.test(url.pathname)) {
@@ -547,7 +552,7 @@ console.log('\nI. Multi-turnieje:');
     await new Promise((r) => srv.listen(0, '127.0.0.1', r));
 
     const cfgI = loadConfig();
-    cfgI.account.maxTournamentsPerBot = 2;
+    cfgI.account.maxTournamentsPerBot = 3;
     cfgI.trading.intervalMs = 1000;
     const store = new Store({ accountsFile: join(tmp, 'multi-accounts.json'), stateFile: join(tmp, 'multi-state.json') });
     const account = { id: 'b-multi', nickname: 'Multi', email: 'm@x.y', password: 'p', token: 'tok-m', user_id: 77, player_id: null, tournament_id: null, players: {} };
@@ -559,18 +564,23 @@ console.log('\nI. Multi-turnieje:');
     await engine.tick();
     await engine.tick();
 
-    ok('dołączył do 2 turniejów (players: tid -> player_id)', () => {
+    ok('dołącza też do turnieju z can_join=false (prawda = endpoint join)', () => {
       assert.deepStrictEqual(Object.keys(account.players).sort(), ['1', '2']);
       assert.strictEqual(account.players[1], 101);
       assert.strictEqual(account.players[2], 102);
     });
     const st = store.getBotState('b-multi');
+    ok('odrzucony turniej (422) zapamiętany na 30 min', () => {
+      assert.ok(st.rejected_joins?.[3], 'rejected_joins[3]');
+    });
     ok('stan per turniej: 2 wpisy running', () => {
       assert.strictEqual(Object.keys(st.tournaments).length, 2);
       assert.ok(Object.values(st.tournaments).every((t) => t.status === 'running'));
     });
     ok('bot aggregate = running', () => assert.strictEqual(st.status, 'running'));
-    ok('historia turniejów ma 2 wpisy', () => assert.strictEqual(st.joinedTournaments.length, 2));
+    ok('lista turniejów w widoku alfabetycznie A→Z', () => {
+      assert.deepStrictEqual(store.botViews()[0].tournaments.map((t) => t.name), ['Alpha', 'Zeta']);
+    });
 
     // instrukcja AI doklejana do promptu
     store.updateSettings({ aiInstruction: 'graj TYLKO z trendem' });
