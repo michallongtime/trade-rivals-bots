@@ -81,23 +81,48 @@ export class Store {
   }
 
   // Wszystkie stany botów do dashboardu (bez internalnych pól).
+  // Z multi-turniejami: tournaments = stany per turniej; pola "pierwotne"
+  // (portfolio/positions/rank/...) pokazują PIERWSZY turniej bota.
   botViews() {
-    return Object.values(this.state.bots).map((s) => ({
-      id: s.id,
-      status: s.status,
-      last_tick: s.last_tick,
-      last_error: s.last_error,
-      tournament: s.tournament ? { id: s.tournament.id, name: s.tournament.name, status: s.tournament.status, is_paid: s.tournament.is_paid } : null,
-      portfolio: s.portfolio,
-      positions: s.positions,
-      pending_orders: s.pending_orders,
-      trading_plan: s.trading_plan ?? null,
-      joinedTournaments: s.joinedTournaments ?? [],
-      rank: s.rank,
-      players_count: s.players_count,
-      last_decision: s.last_decision,
-      log: s.log.slice(-30),
-      created_at: s.created_at,
-    }));
+    return Object.values(this.state.bots).map((s) => {
+      const tlist = Object.values(s.tournaments ?? {});
+      const primary = tlist[0] ?? null;
+      return {
+        id: s.id,
+        status: s.status,
+        last_tick: s.last_tick,
+        last_error: s.last_error,
+        tournament: primary
+          ? { id: primary.id, name: primary.name, status: primary.status, is_paid: primary.is_paid }
+          : s.tournament ? { id: s.tournament.id, name: s.tournament.name, status: s.tournament.status, is_paid: s.tournament.is_paid } : null,
+        portfolio: primary?.portfolio ?? s.portfolio ?? null,
+        positions: primary?.positions ?? s.positions ?? [],
+        pending_orders: primary?.pending_orders ?? s.pending_orders ?? [],
+        trading_plan: primary?.trading_plan ?? s.trading_plan ?? null,
+        joinedTournaments: s.joinedTournaments ?? [],
+        tournaments: tlist.map((t) => ({
+          id: t.id,
+          name: t.name,
+          status: t.status,
+          is_paid: t.is_paid,
+          entry_fee: t.entry_fee,
+          max_leverage: t.max_leverage,
+          fee_percent: t.fee_percent,
+          trading_plan: t.trading_plan ?? null,
+          portfolio: t.portfolio ?? null,
+          positions: t.positions ?? [],
+          pending_orders: t.pending_orders ?? [],
+          rank: t.rank,
+          players_count: t.players_count,
+          last_decision: t.last_decision ?? null,
+          last_error: t.last_error ?? null,
+        })),
+        rank: primary?.rank ?? s.rank ?? null,
+        players_count: primary?.players_count ?? s.players_count ?? null,
+        last_decision: primary?.last_decision ?? s.last_decision ?? null,
+        log: s.log.slice(-30),
+        created_at: s.created_at,
+      };
+    });
   }
 }

@@ -249,38 +249,46 @@ function rowHtml(b) {
   </tr>${expanded ? detailsRow(b) : ''}`;
 }
 
-// Rozwijany rekord: dołączone turnieje (statusy) + otwarte pozycje.
+// Rozwijany rekord: bloki per turniej (status, equity, pozycje, decyzja).
 function detailsRow(b) {
-  const tj = b.joinedTournaments ?? [];
-  const pos = b.positions ?? [];
-  const tRows = tj.length
-    ? tj.map((t) => `<tr>
-        <td>${esc(t.name ?? '#' + t.id)}</td>
-        <td><span class="st ${tStatusCls(t.status)}"><span class="dot"></span>${esc(t.status ?? '?')}</span></td>
-        <td class="muted">${esc((t.joined_at ?? '').slice(0, 19).replace('T', ' '))}</td>
-      </tr>`).join('')
-    : '<tr><td colspan="3" class="empty" style="padding:10px">brak dołączonych turniejów</td></tr>';
-  const pRows = pos.length
-    ? pos.map((p) => `<tr>
-        <td>${esc(p.market_symbol ?? p.market_id ?? '?')}</td>
-        <td>${esc(p.side ?? '')}</td>
-        <td>${fmt(p.qty)}</td>
-        <td>${fmt(p.entry_price)}</td>
-        <td>${fmt(p.mark_price)}</td>
-        <td class="${pnlCls(p.unrealized_pnl)}">${fmt(p.unrealized_pnl)}</td>
-      </tr>`).join('')
-    : '<tr><td colspan="6" class="empty" style="padding:10px">brak otwartych pozycji</td></tr>';
+  const tours = b.tournaments ?? [];
+  const blocks = tours.length
+    ? tours.map((t) => {
+        const pos = t.positions ?? [];
+        const p = t.portfolio ?? {};
+        const plan = t.trading_plan ?? null;
+        const dec = t.last_decision
+          ? (t.last_decision.error ? `${t.last_decision.action} (${t.last_decision.error})` : JSON.stringify(t.last_decision))
+          : '–';
+        const pRows = pos.length
+          ? pos.map((x) => `<tr>
+              <td>${esc(x.market_symbol ?? x.market_id ?? '?')}</td>
+              <td>${esc(x.side ?? '')}</td>
+              <td>${fmt(x.qty)}</td>
+              <td>${fmt(x.entry_price)}</td>
+              <td>${fmt(x.mark_price)}</td>
+              <td class="${pnlCls(x.unrealized_pnl)}">${fmt(x.unrealized_pnl)}</td>
+            </tr>`).join('')
+          : '<tr><td colspan="6" class="empty" style="padding:10px">brak otwartych pozycji</td></tr>';
+        return `<div style="flex:1;min-width:320px">
+          <div style="margin-bottom:6px">
+            <b>${esc(t.name ?? '#' + t.id)}</b>
+            <span class="st ${tStatusCls(t.status)}"><span class="dot"></span>${esc(t.status ?? '?')}</span>
+            ${plan ? ` <span class="muted">🎯 ${esc(plan.symbols.join(', '))} · do ${plan.maxPositionAmountUsd} USDT</span>` : ''}
+          </div>
+          <div class="muted" style="margin-bottom:4px">
+            Equity: <b style="color:var(--text)">${fmt(p.equity)}</b>
+            · PnL: <span class="${pnlCls(p.realized_pnl)}">${fmt(p.realized_pnl)}</span>
+            · rank: ${t.rank != null ? `${t.rank}/${t.players_count ?? '?'}` : '–'}
+            · decyzja: <span style="color:var(--text)" title="${esc(dec)}">${esc(dec.length > 60 ? dec.slice(0, 60) + '…' : dec)}</span>
+          </div>
+          <table style="background:transparent"><thead><tr><th>Rynek</th><th>Kier.</th><th>Ilość</th><th>Wejście</th><th>Mark</th><th>Niezrealiz.</th></tr></thead><tbody>${pRows}</tbody></table>
+        </div>`;
+      }).join('')
+    : '<div class="muted">brak dołączonych turniejów</div>';
   return `<tr><td colspan="11" style="padding:8px 12px;background:#1b1f2b">
-    <div style="display:flex;gap:24px;flex-wrap:wrap">
-      <div style="flex:1;min-width:280px">
-        <div class="muted" style="margin-bottom:6px">🏆 Dołączone turnieje (${tj.length})</div>
-        <table style="background:transparent"><thead><tr><th>Turniej</th><th>Status</th><th>Dołączył</th></tr></thead><tbody>${tRows}</tbody></table>
-      </div>
-      <div style="flex:1;min-width:340px">
-        <div class="muted" style="margin-bottom:6px">📊 Otwarte pozycje (${pos.length})</div>
-        <table style="background:transparent"><thead><tr><th>Rynek</th><th>Kierunek</th><th>Ilość</th><th>Wejście</th><th>Mark</th><th>Niezrealiz.</th></tr></thead><tbody>${pRows}</tbody></table>
-      </div>
-    </div>
+    <div class="muted" style="margin-bottom:8px">🏆 Turnieje (${tours.length})</div>
+    <div style="display:flex;gap:24px;flex-wrap:wrap">${blocks}</div>
   </td></tr>`;
 }
 
