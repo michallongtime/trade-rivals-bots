@@ -165,6 +165,12 @@ let managerOffline = null;
   ok('pierwsze konto zarejestrowane', () => assert.strictEqual(store.accounts.accounts.length, 1));
   await sleep(10000);
   ok('oba konta zarejestrowane', () => assert.strictEqual(store.accounts.accounts.length, 2));
+  ok('nowe boty mają skopiowane globalne ustawienia AI', () => {
+    const g = store.getSettings();
+    for (const acc of store.accounts.accounts) {
+      assert.deepStrictEqual(store.getBotState(acc.id).ai_settings, g, `bot ${acc.id}`);
+    }
+  });
   await sleep(6000);
   const views = store.botViews();
   ok('boty dołączyły i mają portfolio', () => views.length === 2 && views.every((b) => b.portfolio && b.status === 'running'));
@@ -612,6 +618,60 @@ console.log('\nI. Multi-turnieje:');
       assert.ok(afterFirst > before, 'pierwszy tick po zmianie pyta');
       assert.strictEqual(stB.ai_requests, afterFirst, 'kolejny tick w limicie nie pyta');
       assert.ok(Object.values(stB.tournaments).every((t) => t.last_decision?.cooldown === true), 'decyzje cooldown');
+    });
+
+    // --- per-bot ustawienia AI: własne nadpisują globalne ---
+    // updateBotAiSettings resetuje nextAiAt, więc tick pyta mimo globalnego
+    // cooldownu 60 min ustawionego powyżej.
+    store.updateSettings({ aiInstruction: 'instrukcja globalna X' });
+    store.updateBotAiSettings('b-multi', { aiInstruction: 'instrukcja per-bot Y' });
+    await engine.tick();
+    const stP = store.getBotState('b-multi');
+    ok('per-bot instrukcja nadpisuje globalną', () => {
+      const ex = stP.ai_exchanges.at(-1);
+      assert.ok((ex?.system ?? '').includes('instrukcja per-bot Y'), 'system zawiera per-bot');
+      assert.ok(!(ex?.system ?? '').includes('instrukcja globalna X'), 'system nie zawiera globalnej');
+      assert.deepStrictEqual(store.botViews().find((v) => v.id === 'b-multi').ai_settings, { aiInstruction: 'instrukcja per-bot Y' }, 'widok bota pokazuje własne ustawienia');
+    });
+
+    // reset -> powrót do dziedziczenia globalnych
+    store.resetBotAiSettings('b-multi');
+    await engine.tick();
+    const stR = store.getBotState('b-multi');
+    ok('reset przywraca dziedziczenie globalnej instrukcji', () => {
+      const ex = stR.ai_exchanges.at(-1);
+      assert.ok((ex?.system ?? '').includes('instrukcja globalna X'), 'system zawiera globalną po resecie');
+      assert.ok(!('ai_settings' in store.getBotState('b-multi')), 'ai_settings usunięte ze stanu');
+      assert.strictEqual(store.botViews().find((v) => v.id === 'b-multi').ai_settings, null, 'widok bota: brak własnych ustawień');
+    });
+
+    // niezależny cooldown per bot (globalny cooldown wraca do 0)
+    const account2 = { id: 'b-solo', nickname: 'Solo', email: 's@x.y', password: 'p', token: 'tok-m', user_id: 77, player_id: null, tournament_id: null, players: {} };
+    const api2 = new ApiClient({
+      cfg: { ...cfgI, api: { ...cfgI.api, baseUrl: `http://127.0.0.1:${srv.address().port}/api` } },
+      account: account2,
+    });
+    const engine2 = new BotEngine({ account: account2, api: api2, llm: new LlmClient({ provider: 'mock' }), store, cfg: cfgI, botId: 'b-solo' });
+    await engine2.tick(); // dołącza do turniejów (pierwsze pytanie — jeszcze z globalnym 60)
+    store.updateSettings({ aiAskIntervalMin: 0 });
+    store.updateBotAiSettings('b-solo', { aiAskIntervalMin: 0 }); // własne: bez limitu
+    store.updateBotAiSettings('b-multi', { aiAskIntervalMin: 60 }); // własne: 60 min
+    const multiBefore = store.getBotState('b-multi').ai_requests;
+    await engine.tick(); // reset nextAiAt -> pyta mimo globalnego cooldownu
+    const multiAfter = store.getBotState('b-multi').ai_requests;
+    await engine.tick(); // kolejny tick w limicie (60 min)
+    const multiNow = store.getBotState('b-multi').ai_requests;
+    const soloBefore = store.getBotState('b-solo').ai_requests;
+    await engine2.tick();
+    const soloAfter = store.getBotState('b-solo').ai_requests;
+    await engine2.tick();
+    const soloNow = store.getBotState('b-solo').ai_requests;
+    ok('per-bot cooldown niezależny: b-multi w limicie, b-solo pyta dalej', () => {
+      assert.ok(multiAfter > multiBefore, 'b-multi pyta tuż po zmianie własnych ustawień');
+      assert.strictEqual(multiNow, multiAfter, 'b-multi w cooldownie na drugim ticku');
+      assert.ok(Object.values(store.getBotState('b-multi').tournaments).every((t) => t.last_decision?.cooldown === true), 'decyzje cooldown b-multi');
+      assert.ok(soloAfter > soloBefore, 'b-solo z własnym intervalem 0 pyta');
+      assert.ok(soloNow > soloAfter, 'b-solo pyta dalej (bez limitu)');
     });
     srv.close();
   });

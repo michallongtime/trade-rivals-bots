@@ -98,6 +98,40 @@ export class Store {
     return this.getSettings();
   }
 
+  // Efektywne ustawienia AI bota: własne (state.bots[id].ai_settings)
+  // z per-pole fallbackiem do globalnych (state.meta.settings).
+  // Pusty string '' to WAŻNE nadpisanie (wyłącza instrukcję dla tego bota),
+  // nie dziedziczenie — stąd type-guardy zamiast `??`.
+  getBotAiSettings(id) {
+    const own = this.state.bots[id]?.ai_settings ?? {};
+    const g = this.getSettings();
+    return {
+      aiInstruction: typeof own.aiInstruction === 'string' ? own.aiInstruction : g.aiInstruction,
+      aiAskIntervalMin: Number.isFinite(own.aiAskIntervalMin) ? own.aiAskIntervalMin : g.aiAskIntervalMin,
+    };
+  }
+
+  // Zapis własnych ustawień AI bota. nextAiAt resetowany celowo — zmiany
+  // per-bot obowiązują od razu (globalne NIE resetują, zachowanie sprzed zmiany).
+  updateBotAiSettings(id, patch) {
+    const s = this.getBotState(id);
+    s.ai_settings = { ...(s.ai_settings ?? {}), ...patch };
+    s.nextAiAt = null;
+    this.saveState();
+    return this.getBotAiSettings(id);
+  }
+
+  // Powrót do dziedziczenia globalnych ustawień. delete (nie = {}) — dzięki
+  // temu `ai_settings ?? null` w botViews poprawnie sygnalizuje dziedziczenie.
+  resetBotAiSettings(id) {
+    const s = this.state.bots[id];
+    if (!s) return this.getBotAiSettings(id);
+    delete s.ai_settings;
+    s.nextAiAt = null;
+    this.saveState();
+    return this.getBotAiSettings(id);
+  }
+
   addLogEntry(id, level, msg) {
     const s = this.getBotState(id);
     s.log.push({ ts: now(), level, msg });
@@ -151,6 +185,7 @@ export class Store {
         last_decision: primary?.last_decision ?? s.last_decision ?? null,
         log: s.log.slice(-30),
         created_at: s.created_at,
+        ai_settings: s.ai_settings ?? null,
       };
     });
   }

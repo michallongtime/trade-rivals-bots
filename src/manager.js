@@ -108,6 +108,11 @@ export class BotManager {
       account.token = res.token;
       account.user_id = res.user.id;
       this.store.upsertAccount(account);
+      // Nowy bot dostaje "swoje" ustawienia AI: kopia bieżących globalnych
+      // (bot bez ai_settings dziedziczyłby je dynamicznie). Jawny saveState —
+      // w testach nie ma fluszu stanu co 2 s jak w produkcji.
+      this.store.getBotState(account.id).ai_settings = this.store.getSettings();
+      this.store.saveState();
       log('info', `registered ${account.nickname} <${account.email}> (id ${account.user_id})`);
       this.startBot(account.id);
     } catch (e) {
