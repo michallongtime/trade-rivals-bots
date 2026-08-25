@@ -677,6 +677,152 @@ console.log('\nI. Multi-turnieje:');
   });
 }
 
+// ============ I2. Wymuszone turnieje (wybór z dashboardu per bot) ============
+console.log('\nI2. Wybór turniejów przy tworzeniu:');
+{
+  const cfgI2 = loadConfig();
+  cfgI2.account.maxTournamentsPerBot = 3;
+  cfgI2.account.registerIntervalMs = 200;
+  cfgI2.trading.intervalMs = 1000;
+
+  // Mini-stub: 2 running + 1 registration_open; join turnieju 3 -> 422.
+  const T2 = {
+    1: { id: 1, name: 'Zeta', status: 'running', can_join: true, markets: [{ id: 1, symbol: 'BTCUSDT' }] },
+    2: { id: 2, name: 'Alpha', status: 'running', can_join: false, markets: [{ id: 1, symbol: 'BTCUSDT' }] },
+    3: { id: 3, name: 'Gamma', status: 'registration_open', can_join: true, markets: [{ id: 1, symbol: 'BTCUSDT' }] },
+  };
+  const joins = []; // kolejne próby join (id turnieju)
+  const srv = http.createServer(async (req, res) => {
+    const url = new URL(req.url, 'http://x');
+    const json = (code, obj) => {
+      const b = JSON.stringify(obj);
+      res.writeHead(code, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(b) });
+      res.end(b);
+    };
+    if (req.method === 'POST' && url.pathname === '/api/auth/login') { for await (const c of req) { /* body */ } return json(200, { token: 'tok-i2', user: { id: 100 } }); }
+    if (req.method === 'GET' && url.pathname === '/api/tournaments') return json(200, { tournaments: Object.values(T2) });
+    let m = url.pathname.match(/^\/api\/tournaments\/(\d+)\/join$/);
+    if (req.method === 'POST' && m) {
+      for await (const c of req) { /* body */ }
+      joins.push(Number(m[1]));
+      if (m[1] === '3') return json(422, { message: 'registration window closed' });
+      return json(200, { player: { id: 100 + Number(m[1]) } });
+    }
+    m = url.pathname.match(/^\/api\/tournaments\/(\d+)$/);
+    if (req.method === 'GET' && m) return json(200, { tournament: T2[m[1]] });
+    return json(404, { message: 'not found' });
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${srv.address().port}/api`;
+
+  const store = new Store({ accountsFile: join(tmp, 'i2-accounts.json'), stateFile: join(tmp, 'i2-state.json') });
+  const mkEngine = (account) => {
+    const api = new ApiClient({ cfg: { ...cfgI2, api: { ...cfgI2.api, baseUrl: base } }, account });
+    return new BotEngine({ account, api, llm: new LlmClient({ provider: 'mock' }), store, cfg: cfgI2, botId: account.id });
+  };
+  const newAcc = (id, extra = {}) => ({ id, nickname: id, email: id + '@x.y', password: 'p', token: 'tok-i2', user_id: 100, player_id: null, tournament_id: null, ...extra });
+
+  // 1. forced [1] z max=1 -> bot dołącza WYŁĄCZNIE do 1
+  {
+    const acc = newAcc('b-f1', { forcedTournaments: [1], maxTournamentsPerBot: 1 });
+    const eng = mkEngine(acc);
+    const before = joins.length;
+    await eng.joinMore(store.getBotState(acc.id));
+    ok('forced [1] z max=1: tylko turniej 1 (bez losowych)', () => {
+      assert.deepStrictEqual(Object.keys(acc.players).sort(), ['1']);
+      assert.deepStrictEqual(joins.slice(before), [1], 'join wołany tylko dla 1');
+    });
+  }
+
+  // 2. forced [3] (join 3 -> 422) -> cooldown, bot nie dołącza 1/2
+  {
+    const acc = newAcc('b-f3', { forcedTournaments: [3], maxTournamentsPerBot: 1 });
+    const eng = mkEngine(acc);
+    const st = store.getBotState(acc.id);
+    const before = joins.length;
+    await eng.joinMore(st);
+    ok('forced [3] (422): cooldown zapisany, brak losowych joinów', () => {
+      assert.deepStrictEqual(joins.slice(before), [3], 'tylko próba 3');
+      assert.ok(st.rejected_joins?.['3'], 'rejected_joins[3]');
+      assert.strictEqual(Object.keys(acc.players).length, 0, 'brak graczy');
+      assert.strictEqual(st.status, 'waiting');
+    });
+  }
+
+  // 3. forced [1,2] z max=1 -> priorytet: dołącza OBA mimo max
+  {
+    const acc = newAcc('b-f12', { forcedTournaments: [1, 2], maxTournamentsPerBot: 1 });
+    const eng = mkEngine(acc);
+    const before = joins.length;
+    await eng.joinMore(store.getBotState(acc.id));
+    ok('forced [1,2] z max=1: dołącza oba (zaznaczone mają priorytet)', () => {
+      assert.deepStrictEqual(Object.keys(acc.players).sort(), ['1', '2']);
+      assert.deepStrictEqual(joins.slice(before).sort(), [1, 2]);
+    });
+  }
+
+  // 4. bez forced, max=1 -> dokładnie 1 dołączony (turniej 3 w fixture zawsze
+  // daje 422, więc bot najpierw próbuje 3, potem losowy z {1,2} — liczy się
+  // liczba dołączonych, nie prób)
+  {
+    const acc = newAcc('b-rnd', { maxTournamentsPerBot: 1 });
+    const eng = mkEngine(acc);
+    const before = joins.length;
+    await eng.joinMore(store.getBotState(acc.id));
+    ok('bez forced, max=1: dokładnie jeden losowy turniej', () => {
+      assert.strictEqual(Object.keys(acc.players).length, 1, 'jeden dołączony');
+      const attempt = joins.slice(before);
+      assert.strictEqual(attempt[0], 3, 'pierwsza próba to tier prefer (3, 422)');
+      assert.strictEqual(attempt.length, 2, 'potem udany join jednego z {1,2}');
+    });
+  }
+
+  // 5. createAccounts passthrough pól (offline manager + sim)
+  {
+    const storeC = new Store({ accountsFile: join(tmp, 'i2c-accounts.json'), stateFile: join(tmp, 'i2c-state.json') });
+    const sim = new TradeSimulator({ busyCount: 0 });
+    const mgr = new BotManager({ store: storeC, cfg: cfgI2, llm: new LlmClient({ provider: 'mock' }), offline: true, sim });
+    ok('createAccounts: nieprawidłowe tournaments -> errors', () => {
+      const r = mgr.createAccounts([{ nickname: 'I2Bad1', email: 'i2bad1@x.y', tournaments: ['x'] }]);
+      assert.strictEqual(r.queued, 0);
+      assert.ok(r.errors.some((e) => /tournaments/.test(e)), `errors: ${r.errors.join('; ')}`);
+    });
+    const r2 = mgr.createAccounts([{ nickname: 'I2Force', email: 'i2force@x.y', tournaments: [7], maxTournamentsPerBot: 99 }]);
+    ok('createAccounts: poprawne pola przyjęte', () => assert.strictEqual(r2.queued, 1));
+    await sleep(1500);
+    const acc = storeC.accounts.accounts.find((a) => a.nickname === 'I2Force');
+    ok('konto ma forcedTournaments [7] i maxTournamentsPerBot 20 (clamp 99)', () => {
+      assert.ok(acc, 'konto zarejestrowane');
+      assert.deepStrictEqual(acc.forcedTournaments, [7]);
+      assert.strictEqual(acc.maxTournamentsPerBot, 20);
+    });
+    mgr.stopAll();
+  }
+
+  // 6. GET /api/tournaments + maxTournamentsPerBot w /api/status (createServer offline)
+  {
+    const storeG = new Store({ accountsFile: join(tmp, 'i2g-accounts.json'), stateFile: join(tmp, 'i2g-state.json') });
+    const simG = new TradeSimulator({ status: 'registration_open' });
+    const mgrG = new BotManager({ store: storeG, cfg: cfgI2, llm: new LlmClient({ provider: 'mock' }), offline: true, dryRun: true, sim: simG });
+    const srvG = createServer({ manager: mgrG, store: storeG, cfg: cfgI2, offline: true, dryRun: true, startedAt: Date.now(), targetName: 'test' });
+    await new Promise((r) => srvG.listen(0, '127.0.0.1', r));
+    const b = `http://127.0.0.1:${srvG.address().port}`;
+    const tours = await (await fetch(b + '/api/tournaments')).json();
+    ok('GET /api/tournaments: tylko running|registration_open, minimalne pola', () => {
+      assert.ok(Array.isArray(tours.tournaments) && tours.tournaments.length >= 1, 'jest turniej');
+      assert.ok(tours.tournaments.every((t) => t.status === 'running' || t.status === 'registration_open'), 'statusy');
+      assert.ok(tours.tournaments.every((t) => t.id != null && t.name != null), 'minimalne pola');
+    });
+    const st = await (await fetch(b + '/api/status')).json();
+    ok('/api/status zawiera maxTournamentsPerBot', () => {
+      assert.strictEqual(st.maxTournamentsPerBot, cfgI2.account.maxTournamentsPerBot);
+    });
+    srvG.close();
+  }
+
+  srv.close();
+}
+
 // ============ cleanup ============
 managerOffline?.stopAll();
 rmSync(tmp, { recursive: true, force: true });

@@ -65,7 +65,27 @@ export class BotManager {
   createAccounts(input) {
     let items;
     if (Array.isArray(input)) {
-      items = input.map((x) => ({ nickname: String(x?.nickname ?? '').trim(), email: String(x?.email ?? '').trim() }));
+      // Zachowaj per-bot wybór turniejów (forcedTournaments) i limit
+      // maxTournamentsPerBot — dashboard wysyła je razem z nick/email.
+      items = input.map((x) => {
+        const it = { nickname: String(x?.nickname ?? '').trim(), email: String(x?.email ?? '').trim() };
+        if (Array.isArray(x?.tournaments)) {
+          const nums = x.tournaments.map(Number);
+          if (nums.every(Number.isInteger)) {
+            // dedup intów z zachowaniem kolejności; klucz obecny też przy [] —
+            // pusta lista = świadoma decyzja „losowo" (nadpisuje cfg.forceId)
+            it.tournaments = [...new Set(nums)];
+          } else {
+            it.tournaments = null; // nieprawidłowe — sygnał do walidacji poniżej
+          }
+        } else if (x?.tournaments != null) {
+          it.tournaments = null; // nieprawidłowe — sygnał do walidacji poniżej
+        }
+        if (x?.maxTournamentsPerBot != null && Number.isFinite(Number(x.maxTournamentsPerBot))) {
+          it.maxTournamentsPerBot = Math.max(1, Math.min(20, Math.round(Number(x.maxTournamentsPerBot))));
+        }
+        return it;
+      });
     } else {
       items = this.proposeAccounts(input);
     }
@@ -74,6 +94,7 @@ export class BotManager {
     for (const it of items) {
       if (!/^[a-zA-Z0-9_]{3,24}$/.test(it.nickname)) errors.push(`nickname „${it.nickname}": 3-24 znaki [a-zA-Z0-9_]`);
       else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(it.email)) errors.push(`email „${it.email}": nieprawidłowy adres`);
+      if (it.tournaments === null) errors.push(`tournaments: lista id turniejów (liczby)`);
       const key = `${it.nickname.toLowerCase()}|${it.email.toLowerCase()}`;
       if (seen.has(key)) errors.push(`duplikat w zgłoszeniu: ${it.nickname}`);
       seen.add(key);
@@ -84,13 +105,14 @@ export class BotManager {
     }
     this.pendingRegistrations += items.length;
     for (const it of items) {
-      this.queue = this.queue.then(() => this.#registerOne(it.nickname, it.email));
+      this.queue = this.queue.then(() => this.#registerOne(it));
     }
     log('info', `queued ${items.length} account(s)`);
     return { queued: items.length };
   }
 
-  async #registerOne(nickname, email) {
+  async #registerOne(item) {
+    const { nickname, email } = item;
     const account = {
       id: `b-${shortId(3)}`,
       nickname,
@@ -102,6 +124,11 @@ export class BotManager {
       tournament_id: null,
       created_at: now(),
     };
+    // Per-bot wybór turniejów i limit max — trafiają do accounts.json
+    // (przetrwają restart; engine czyta je z account przez this.account).
+    if (Array.isArray(item.tournaments)) account.forcedTournaments = item.tournaments;
+    if (item.maxTournamentsPerBot) account.maxTournamentsPerBot = item.maxTournamentsPerBot;
+
     try {
       const api = this.apiFor(account);
       const res = await api.register(nickname, email, account.password);

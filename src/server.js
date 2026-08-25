@@ -5,6 +5,7 @@ import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { ROOT } from './config.js';
 import { assertAuthConfig, createAuthGuard } from './auth.js';
+import { ApiClient } from './api.js';
 
 const HTML_PATH = join(ROOT, 'public', 'dashboard.html');
 const HTML = readFileSync(HTML_PATH, 'utf8');
@@ -92,6 +93,32 @@ export function createServer({ manager, store, cfg, offline, dryRun, startedAt, 
         }, extra);
       }
 
+      // Turnieje dla modala tworzenia botów: running | registration_open.
+      // Źródłem jest zewnętrzne API (listTournaments jest publiczne — bez
+      // tokena). Klient budowany leniwie, żeby fake manager (testy) nie musiał
+      // implementować apiFor; offline -> symulator.
+      let tournamentsClient = null;
+      if (m === 'GET' && p === '/api/tournaments') {
+        try {
+          tournamentsClient ??= new ApiClient({ cfg, account: {}, offline, dryRun, sim: manager.sim ?? null });
+          const list = await tournamentsClient.listTournaments();
+          const tours = (list?.tournaments ?? [])
+            .filter((t) => t.status === 'running' || t.status === 'registration_open')
+            .map((t) => ({
+              id: t.id,
+              name: t.name,
+              status: t.status,
+              is_paid: t.is_paid,
+              entry_fee: t.entry_fee,
+              can_join: t.can_join,
+              players_count: t.players_count,
+            }));
+          return sendJson(res, 200, { tournaments: tours });
+        } catch (e) {
+          return sendJson(res, 502, { error: `tournaments unavailable: ${e.message}` });
+        }
+      }
+
       if (m === 'GET' && p === '/api/status') {
         const bots = store.botViews();
         const totals = { total: bots.length, running: 0, paused: 0, waiting: 0, needs_funding: 0, error: 0 };
@@ -103,6 +130,7 @@ export function createServer({ manager, store, cfg, offline, dryRun, startedAt, 
           aiProvider: cfg.ai.provider,
           aiModel: cfg.ai.model,
           baseUrl: cfg.api.baseUrl,
+          maxTournamentsPerBot: cfg.account.maxTournamentsPerBot ?? 1,
           totals,
           registrationQueueLen: manager.registrationQueueLen(),
           aiRequestsTotal: store.aiRequestsTotal(),
