@@ -57,6 +57,12 @@
   .prow input { flex: 1; background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 8px 10px; font-size: 13px; min-width: 0; }
   .prow .pemail { flex: 1.4; }
   .prow input.invalid { border-color: var(--red); }
+  .pwrap { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; background: var(--bg); }
+  .ptours { display: flex; align-items: center; gap: 6px 10px; flex-wrap: wrap; margin-top: 8px; font-size: 12px; color: var(--muted); }
+  .ptours .tmax { width: 56px; flex: none; padding: 4px 6px; background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: 6px; font-size: 12px; }
+  .tchip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 9px; border: 1px solid var(--border); border-radius: 20px; cursor: pointer; user-select: none; color: var(--muted); }
+  .tchip input { flex: none; margin: 0; width: auto; accent-color: var(--green); }
+  .tchip.on { border-color: var(--green); color: var(--text); background: rgba(0,200,0,.08); }
   .modal-actions { display: flex; gap: 8px; margin-top: 10px; justify-content: flex-end; align-items: center; flex-wrap: wrap; }
   #modalError { margin-top: 8px; max-width: 100%; white-space: normal; }
   #logpanel { position: fixed; left: 20px; right: 20px; bottom: 16px; background: #0b0d12; border: 1px solid var(--border); border-radius: 10px; max-height: 42vh; display: none; flex-direction: column; }
@@ -100,7 +106,8 @@
 <div id="modal" class="overlay" hidden>
   <div class="dialog">
     <h2>Nowe boty <span id="modalCount"></span></h2>
-    <div class="hint">Edytuj nicki i emaile, losuj pojedyncze (🔄) lub wszystkie (🎲). Zatwierdź, aby zarejestrować.</div>
+    <div class="hint">Edytuj nicki i emaile, losuj pojedyncze (🔄) lub wszystkie (🎲). Zaznacz turnieje per bot — bez zaznaczenia bot wybierze je losowo. Zatwierdź, aby zarejestrować.</div>
+    <div id="toursHint" class="hint" style="margin-top:-6px"></div>
     <div id="proposalRows"></div>
     <div class="modal-actions">
       <button class="ghost" id="regenBtn">🎲 Losuj ponownie</button>
@@ -490,6 +497,11 @@ async function refreshLog() {
 // --- modal propozycji nicków ---
 let proposals = [];
 let emailTouched = [];
+// per-bot wybór turniejów w modalu (tablice równoległe do proposals — żyją
+// poza nim, żeby przetrwać regenOne/regenAll, wzorzec emailTouched)
+let tournList = [];
+let selTours = [];
+let maxTours = [];
 
 function closeModal() {
   $('modal').hidden = true;
@@ -497,14 +509,36 @@ function closeModal() {
 }
 
 function renderProposals() {
+  // defensywnie: selekcje równoległe do proposals (regen nie może ich zgubić)
+  if (selTours.length !== proposals.length) selTours = proposals.map(() => []);
+  if (maxTours.length !== proposals.length) maxTours = proposals.map(() => status?.maxTournamentsPerBot ?? 4);
   $('modalCount').textContent = `(${proposals.length})`;
+  const chipsHtml = (i) => tournList.length
+    ? tournList.map((t) => {
+        const checked = selTours[i].includes(Number(t.id));
+        const title = `${esc(t.status)}${t.is_paid ? ' · opłata ' + esc(t.entry_fee ?? '?') : ''}${t.players_count != null ? ' · graczy ' + t.players_count : ''}`;
+        return `<label class="tchip ${checked ? 'on' : ''}" title="${title}"><input type="checkbox" class="tchk" data-id="${esc(t.id)}" ${checked ? 'checked' : ''}> ${esc(t.name ?? '#' + t.id)}</label>`;
+      }).join('')
+    : '<span>brak turniejów (running / otwarte zapisy)</span>';
   $('proposalRows').innerHTML = proposals.map((p, i) =>
-    `<div class="prow">
-      <input class="pnick" value="${esc(p.nickname)}" spellcheck="false" placeholder="nickname (3-24: a-zA-Z0-9_)">
-      <input class="pemail" value="${esc(p.email)}" spellcheck="false" placeholder="email">
-      <button class="mini ghost">🔄</button>
+    `<div class="pwrap">
+      <div class="prow">
+        <input class="pnick" value="${esc(p.nickname)}" spellcheck="false" placeholder="nickname (3-24: a-zA-Z0-9_)">
+        <input class="pemail" value="${esc(p.email)}" spellcheck="false" placeholder="email">
+        <button class="mini ghost">🔄</button>
+      </div>
+      <div class="ptours">
+        <span>max turniejów:</span>
+        <input type="number" class="tmax" value="${maxTours[i]}" min="1" max="20" title="ile turniejów naraz może dołączyć ten bot (1-20)">
+        <span>· dołącz do:</span>
+        ${chipsHtml(i)}
+      </div>
     </div>`).join('');
-  $('proposalRows').querySelectorAll('.prow').forEach((row, i) => {
+  $('toursHint').textContent = tournList.length
+    ? 'Zaznaczone turnieje = bot dołącza tylko do nich; bez zaznaczenia wybiera losowo (do max turniejów).'
+    : 'Nie udało się pobrać turniejów — boty wybiorą je losowo.';
+  $('proposalRows').querySelectorAll('.pwrap').forEach((wrap, i) => {
+    const row = wrap.querySelector('.prow');
     const nickInp = row.querySelector('.pnick');
     const emailInp = row.querySelector('.pemail');
     nickInp.oninput = () => {
@@ -524,6 +558,20 @@ function renderProposals() {
       emailInp.classList.remove('invalid');
     };
     row.querySelector('button').onclick = () => regenOne(i);
+    wrap.querySelector('.tmax').oninput = (e) => {
+      const v = Math.round(Number(e.target.value));
+      maxTours[i] = Math.max(1, Math.min(20, Number.isFinite(v) ? v : 1));
+    };
+    wrap.querySelectorAll('.tchk').forEach((cb) => {
+      cb.onchange = () => {
+        const id = Number(cb.dataset.id);
+        if (!Number.isInteger(id)) return;
+        const set = new Set(selTours[i]);
+        if (cb.checked) set.add(id); else set.delete(id);
+        selTours[i] = [...set];
+        cb.closest('.tchip').classList.toggle('on', cb.checked);
+      };
+    });
   });
 }
 
@@ -537,8 +585,14 @@ async function propose(count, exclude) {
 
 async function openPropose() {
   const count = Math.max(1, Math.min(Number($('count').value) || 1, 500));
+  // błąd pobierania turniejów nie blokuje tworzenia — boty wybiorą losowo
+  try {
+    tournList = (await api('/api/tournaments')).tournaments ?? [];
+  } catch { tournList = []; }
   proposals = await propose(count, []);
   emailTouched = proposals.map(() => false);
+  selTours = proposals.map(() => []);
+  maxTours = proposals.map(() => status?.maxTournamentsPerBot ?? 4);
   renderProposals();
   $('modal').hidden = false;
 }
@@ -579,7 +633,14 @@ async function confirmProposals() {
     const r = await api('/api/bots', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ accounts: proposals }),
+      body: JSON.stringify({
+        accounts: proposals.map((p, i) => ({
+          nickname: p.nickname,
+          email: p.email,
+          tournaments: selTours[i] ?? [],
+          maxTournamentsPerBot: Math.max(1, Math.min(20, Math.round(Number(maxTours[i]) || 1))),
+        })),
+      }),
     });
     closeModal();
     load();

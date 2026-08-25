@@ -63,14 +63,19 @@ export class BotEngine {
   }
 
   // Dołączanie do turniejów aż do maxTournamentsPerBot: discovery
-  // (forceId | preferStatus | fallbackStatus | can_join), gate opłaty
+  // (forced per bot | preferStatus | fallbackStatus | can_join), gate opłaty
   // wpisowej, join z obsługą AlreadyJoined (player_id z /tournaments/{id}),
   // InsufficientFunds i 422 (okno zamknięte -> pomiń turniej).
+  // forced niepuste (account.forcedTournaments — zaznaczone w dashboardzie)
+  // = bot dołącza WYŁĄCZNIE do nich (max ich nie limituje); pusta tablica
+  // z konta = świadoma decyzja „losowo" i nadpisuje cfg.tournament.forceId.
   async joinMore(state) {
     const account = this.account;
     this.ensureAccountPlayers(account);
-    const max = this.cfg.account.maxTournamentsPerBot ?? 1;
-    if (Object.keys(account.players).length >= max) return;
+    const max = account.maxTournamentsPerBot ?? this.cfg.account.maxTournamentsPerBot ?? 1;
+    const forced = this.#forcedIds();
+    const pendingForced = forced.filter((id) => !account.players[id] && !this.#isRejected(state, id));
+    if (Object.keys(account.players).length >= max && !pendingForced.length) return;
 
     // Przy czekaniu ponawiamy rzadziej (co fundingCheckTicks), żeby nie
     // spamować serwera odrzuconymi joinami.
@@ -81,82 +86,118 @@ export class BotEngine {
 
     const list = await this.api.listTournaments();
     const ts = list?.tournaments ?? [];
-    const joined = new Set(Object.keys(account.players).map(Number));
-    const prefer = this.cfg.tournament.preferStatus;
-    const fallback = this.cfg.tournament.fallbackStatus;
-    const forced = this.cfg.tournament.forceId;
-    // can_join bywa false mimo otwartych zapisów (aplikacja turniejowa) —
-    // kandydat = status zgodny z preferencją LUB can_join; ostateczną prawdę
-    // mówi endpoint join (422 = pomijamy turniej na 30 min).
-    const candidates = ts.filter((t) => {
-      if (joined.has(Number(t.id))) return false;
-      if (forced && Number(t.id) !== Number(forced)) return false;
-      const rejected = state.rejected_joins?.[t.id];
-      if (rejected && Date.now() - rejected < 1800000) return false;
-      return t.can_join || t.status === prefer || t.status === fallback;
-    });
-    const ordered = [
-      ...candidates.filter((t) => t.status === prefer),
-      ...candidates.filter((t) => t.status === fallback),
-      ...candidates,
-    ];
 
-    for (const tournament of ordered) {
-      if (Object.keys(account.players).length >= max) break;
-
-      if (tournament.is_paid) {
-        const fee = toNumber(tournament.entry_fee);
-        if (fee > this.cfg.tournament.maxEntryFeeUsd) {
-          this.log('warn', `entry fee ${fee} > max allowed ${this.cfg.tournament.maxEntryFeeUsd}, skipping`);
-          continue;
-        }
-        const wallet = await this.api.getWallet();
-        const balance = toNumber(wallet?.wallet?.balance);
-        if (balance < fee) {
-          this.log('warn', `needs funding: wallet ${balance} USDT, entry fee ${fee} USDT`);
-          state.status = 'needs_funding';
-          continue;
-        }
+    // Faza 1 — forced: turnieje jawnie wybrane (dashboard) / forceId (config).
+    for (const id of pendingForced) {
+      const t = ts.find((x) => Number(x.id) === id);
+      if (!t) {
+        this.log('warn', `forced tournament #${id} not on the list, skipping`);
+        continue;
       }
+      await this.#joinOne(state, t, true);
+    }
 
-      try {
-        const res = await this.api.joinTournament(tournament.id);
-        account.players[tournament.id] = res.player.id;
-        this.store.upsertAccount(account);
-        state.status = 'running';
-        this.log('info', `joined tournament #${tournament.id} as player ${res.player.id}`);
-        this.recordJoin(state, tournament);
-      } catch (e) {
-        if (e instanceof AlreadyJoined) {
-          const t = await this.api.getTournament(tournament.id);
-          const pid = t?.me?.player_id;
-          if (pid) {
-            account.players[tournament.id] = pid;
-            this.store.upsertAccount(account);
-            state.status = 'running';
-            this.log('info', `already joined as player ${pid}`);
-            this.recordJoin(state, tournament);
-          }
-        } else if (e instanceof InsufficientFunds) {
-          this.log('warn', 'insufficient wallet funds to join');
-          state.status = 'needs_funding';
-          continue;
-        } else if (e instanceof ApiError && e.status === 422) {
-          // okno zapisów zamknięte / nie można teraz dołączyć — pomijamy
-          // ten turniej na 30 min (żeby nie spamować odrzuconymi joinami)
-          state.rejected_joins ??= {};
-          state.rejected_joins[tournament.id] = Date.now();
-          this.log('info', `join rejected (${e.message}), skipping for 30 min`);
-          continue;
-        } else {
-          throw e;
-        }
+    // Faza 2 — losowy dobór, tylko gdy bot nie ma wymuszonego wyboru.
+    if (!forced.length) {
+      const joined = new Set(Object.keys(account.players).map(Number));
+      const prefer = this.cfg.tournament.preferStatus;
+      const fallback = this.cfg.tournament.fallbackStatus;
+      // can_join bywa false mimo otwartych zapisów (aplikacja turniejowa) —
+      // kandydat = status zgodny z preferencją LUB can_join; ostateczną prawdę
+      // mówi endpoint join (422 = pomijamy turniej na 30 min).
+      const candidates = ts.filter((t) => {
+        if (joined.has(Number(t.id))) return false;
+        if (this.#isRejected(state, t.id)) return false;
+        return t.can_join || t.status === prefer || t.status === fallback;
+      });
+      // Losowość w obrębie tierów preferencji: tier prefer (otwarte zapisy)
+      // idzie pierwszy, ale wybór w tierze jest losowy — boty nie biorą zawsze
+      // pierwszych turniejów z listy.
+      const ordered = [
+        ...shuffle(candidates.filter((t) => t.status === prefer)),
+        ...shuffle(candidates.filter((t) => t.status === fallback)),
+        ...shuffle(candidates),
+      ];
+
+      for (const tournament of ordered) {
+        if (Object.keys(account.players).length >= max) break;
+        await this.#joinOne(state, tournament, false);
       }
     }
 
     if (!Object.keys(account.players).length && state.status !== 'needs_funding') {
       this.log('info', 'no joinable tournament, waiting');
       state.status = 'waiting';
+    }
+  }
+
+  // Wymuszone turnieje bota: własna lista z konta (account.forcedTournaments)
+  // nadpisuje globalny cfg.tournament.forceId (fallback dla starych kont).
+  #forcedIds() {
+    if (Array.isArray(this.account.forcedTournaments)) {
+      return [...new Set(this.account.forcedTournaments.map(Number).filter(Number.isInteger))];
+    }
+    const fid = this.cfg.tournament.forceId;
+    return fid != null ? [Number(fid)] : [];
+  }
+
+  // rejected_joins: cooldown 30 min po 422 z join. Klucze kanoniczne string —
+  // live API potrafi zwrócić id jako string, forced id z managera to numbery.
+  #isRejected(state, id) {
+    const rej = state.rejected_joins?.[String(id)];
+    return rej && Date.now() - rej < 1800000;
+  }
+
+  // Pojedyncza próba dołączenia do turnieju (wspólna dla forced i losowych).
+  // forced pomija próg maxEntryFeeUsd (użytkownik jawnie wybrał turniej),
+  // ale zachowuje sprawdzenie salda portfela (402 -> needs_funding).
+  async #joinOne(state, tournament, forced) {
+    const account = this.account;
+    if (tournament.is_paid) {
+      const fee = toNumber(tournament.entry_fee);
+      if (!forced && fee > this.cfg.tournament.maxEntryFeeUsd) {
+        this.log('warn', `entry fee ${fee} > max allowed ${this.cfg.tournament.maxEntryFeeUsd}, skipping`);
+        return;
+      }
+      const wallet = await this.api.getWallet();
+      const balance = toNumber(wallet?.wallet?.balance);
+      if (balance < fee) {
+        this.log('warn', `needs funding: wallet ${balance} USDT, entry fee ${fee} USDT`);
+        state.status = 'needs_funding';
+        return;
+      }
+    }
+
+    try {
+      const res = await this.api.joinTournament(tournament.id);
+      account.players[tournament.id] = res.player.id;
+      this.store.upsertAccount(account);
+      state.status = 'running';
+      this.log('info', `joined tournament #${tournament.id} as player ${res.player.id}`);
+      this.recordJoin(state, tournament);
+    } catch (e) {
+      if (e instanceof AlreadyJoined) {
+        const t = await this.api.getTournament(tournament.id);
+        const pid = t?.me?.player_id;
+        if (pid) {
+          account.players[tournament.id] = pid;
+          this.store.upsertAccount(account);
+          state.status = 'running';
+          this.log('info', `already joined as player ${pid}`);
+          this.recordJoin(state, tournament);
+        }
+      } else if (e instanceof InsufficientFunds) {
+        this.log('warn', 'insufficient wallet funds to join');
+        state.status = 'needs_funding';
+      } else if (e instanceof ApiError && e.status === 422) {
+        // okno zapisów zamknięte / nie można teraz dołączyć — pomijamy
+        // ten turniej na 30 min (żeby nie spamować odrzuconymi joinami)
+        state.rejected_joins ??= {};
+        state.rejected_joins[String(tournament.id)] = Date.now();
+        this.log('info', `join rejected (${e.message}), skipping for 30 min`);
+      } else {
+        throw e;
+      }
     }
   }
 
