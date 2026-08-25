@@ -87,11 +87,11 @@
 </div>
 
 <div class="controls" style="margin-bottom:10px">
-  <span class="muted">🤖 AI:</span>
+  <span class="muted">🤖 Domyślne AI:</span>
   <input type="number" id="aiInterval" value="0" min="0" max="120" style="width:70px" title="co ile minut bot może pytać AI (0 = każdy tick)">
   <span class="muted">min między pytaniami</span>
-  <textarea id="aiInstruction" rows="1" placeholder="Instrukcja dla AI — doklejana automatycznie do kontekstu giełdowego/świecowego (np. „graj tylko z trendem, ciasne TP/SL")" style="flex:1;background:var(--panel);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:8px 10px;font:13px system-ui;resize:vertical;min-width:220px"></textarea>
-  <button id="saveAiBtn">Zapisz ustawienia AI</button>
+  <textarea id="aiInstruction" rows="1" placeholder="Domyślna instrukcja dla AI — kopiowana do nowych botów; boty bez własnych ustawień ją dziedziczą (np. „graj tylko z trendem, ciasne TP/SL")" style="flex:1;background:var(--panel);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:8px 10px;font:13px system-ui;resize:vertical;min-width:220px"></textarea>
+  <button id="saveAiBtn">Zapisz domyślne ustawienia AI</button>
   <span class="muted" id="aiSaved"></span>
 </div>
 
@@ -147,6 +147,10 @@ let bots = [];
 let status = null;
 let selectedBot = null;
 let logTimer = null;
+// globalne ustawienia AI (domyślne) + drafty wpisywanych wartości per bot —
+// draft chroni tekst w rozwijanym wierszu przed przerysowaniem tabeli co 3 s.
+let globalAi = { aiInstruction: '', aiAskIntervalMin: 0 };
+const botAiDraft = {};
 
 function fmt(x) {
   if (x == null) return '–';
@@ -184,6 +188,8 @@ async function api(path, opts = {}) {
     stopAutoRefresh();
     $('aiInstruction').value = '';
     $('aiInterval').value = 0;
+    globalAi = { aiInstruction: '', aiAskIntervalMin: 0 };
+    for (const k of Object.keys(botAiDraft)) delete botAiDraft[k];
     showLogin('Nieprawidłowe dane — zaloguj się ponownie.');
     throw new Error('unauthorized');
   }
@@ -328,7 +334,77 @@ function detailsRow(b) {
       <div class="muted" style="margin-bottom:6px">🤖 Zapytania AI (${b.aiRequests ?? 0}) <button class="mini ghost" onclick="loadAi('${b.id}')">${aiCache[b.id] ? 'odśwież' : 'pokaż'}</button></div>
       <div id="ai-${b.id}">${aiCacheHtml(b)}</div>
     </div>
+    ${botAiFormHtml(b)}
   </td></tr>`;
+}
+
+// Formularz własnych ustawień AI bota (cooldown + instrukcja) w rozwijanym
+// wierszu. Prefill: draft (wpisywane wartości) ?? zapisane ustawienia bota ??
+// globalne domyślne. Draft + wstrzymanie pollingu przy fokusie (delegacja
+// na #rows poniżej) chronią tekst przed przerysowaniem tabeli co 3 s.
+function botAiFormHtml(b) {
+  const d = botAiDraft[b.id] ?? {};
+  const own = b.ai_settings;
+  const inheriting = own == null;
+  const interval = d.aiAskIntervalMin ?? own?.aiAskIntervalMin ?? globalAi.aiAskIntervalMin ?? 0;
+  const instruction = d.aiInstruction ?? own?.aiInstruction ?? globalAi.aiInstruction ?? '';
+  return `<div style="margin-top:14px" class="bot-ai-form">
+    <div class="muted" style="margin-bottom:6px">⚙ Ustawienia AI tego bota ${inheriting ? '<span title="bot używa domyślnych ustawień z paska górnego — zapisz własne, aby go wyróżnić">(dziedziczy globalne)</span>' : ''}</div>
+    <div style="display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap">
+      <input type="number" id="botAiInt-${b.id}" value="${interval}" min="0" max="120" style="width:70px" title="co ile minut bot może pytać AI (0 = każdy tick)" oninput="botAiInput('${b.id}','interval',this.value)">
+      <span class="muted" style="padding-top:8px">min między pytaniami</span>
+      <textarea rows="1" id="botAiTxt-${b.id}" placeholder="Instrukcja dla AI tego bota — nadpisuje domyślną (np. „graj agresywnie, ciasne TP/SL")" style="flex:1;background:var(--panel);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:8px 10px;font:13px system-ui;resize:vertical;min-width:220px" oninput="botAiInput('${b.id}','instruction',this.value)">${esc(instruction)}</textarea>
+      <button onclick="evSaveBotAi('${b.id}')">Zapisz własne</button>
+      ${inheriting ? '' : `<button class="ghost" onclick="evResetBotAi('${b.id}')" title="bot wróci do domyślnych ustawień globalnych">↺ dziedzicz globalne</button>`}
+    </div>
+    <div class="muted" style="margin-top:4px">${esc(d.savedMsg ?? '')}</div>
+  </div>`;
+}
+
+// Wpisywana wartość ląduje w drafcie — przerysowanie tabeli (polling/load())
+// nie może jej skasować. Kasuje też komunikat z poprzedniego zapisu.
+function botAiInput(id, field, value) {
+  const d = botAiDraft[id] ??= {};
+  if (field === 'interval') d.aiAskIntervalMin = value;
+  else d.aiInstruction = value;
+  delete d.savedMsg;
+}
+
+async function evSaveBotAi(id) {
+  const d = botAiDraft[id] ??= {};
+  const msg = (m) => { d.savedMsg = m; };
+  try {
+    const r = await api(`/api/bots/${id}/settings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        aiInstruction: d.aiInstruction ?? $('botAiTxt-' + id).value,
+        aiAskIntervalMin: Number(d.aiAskIntervalMin ?? $('botAiInt-' + id).value) || 0,
+      }),
+    });
+    delete d.aiInstruction;
+    delete d.aiAskIntervalMin;
+    msg('✓ zapisano (cooldown: ' + r.aiAskIntervalMin + ' min, instrukcja: ' + (r.aiInstruction ? r.aiInstruction.length + ' znaków' : 'brak') + ')');
+    load();
+  } catch (e) {
+    msg('błąd zapisu: ' + e.message);
+    load();
+  }
+}
+
+async function evResetBotAi(id) {
+  try {
+    await api(`/api/bots/${id}/settings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reset: true }),
+    });
+    botAiDraft[id] = { savedMsg: '✓ bot wrócił do domyślnych ustawień globalnych' };
+    load();
+  } catch (e) {
+    (botAiDraft[id] ??= {}).savedMsg = 'błąd: ' + e.message;
+    load();
+  }
 }
 
 // Podgląd wymian AI: cache w pamięci (payload ładowany na żądanie przez
@@ -529,12 +605,14 @@ $('lBtn').onclick = async () => {
   loadAiSettings(); // wczytaj aktualnie obowiązującą instrukcję do textarea
   load();
 };
-// --- ustawienia AI (instrukcja + cooldown pytań) ---
+// --- ustawienia AI (domyślna instrukcja + cooldown pytań) ---
 async function loadAiSettings() {
   try {
     const s = await api('/api/settings');
-    $('aiInstruction').value = s.aiInstruction ?? '';
-    $('aiInterval').value = s.aiAskIntervalMin ?? 0;
+    globalAi = { aiInstruction: s.aiInstruction ?? '', aiAskIntervalMin: s.aiAskIntervalMin ?? 0 };
+    $('aiInstruction').value = globalAi.aiInstruction;
+    $('aiInterval').value = globalAi.aiAskIntervalMin;
+    load(); // formularze per-bot w rozwijanych wierszach prefillują się z globalAi
   } catch { /* 401/429 obsłużone */ }
 }
 $('saveAiBtn').onclick = async () => {
@@ -547,12 +625,26 @@ $('saveAiBtn').onclick = async () => {
         aiAskIntervalMin: Number($('aiInterval').value) || 0,
       }),
     });
+    globalAi = { aiInstruction: r.aiInstruction ?? '', aiAskIntervalMin: r.aiAskIntervalMin ?? 0 };
     $('aiSaved').textContent = '✓ zapisano (instrukcja: ' + (r.aiInstruction ? r.aiInstruction.length + ' znaków' : 'brak') + ', cooldown: ' + r.aiAskIntervalMin + ' min)';
     setTimeout(() => { $('aiSaved').textContent = ''; }, 5000);
+    load(); // boty bez własnych ustawień od razu pokazują nowe domyślne
   } catch (e) {
     $('aiSaved').textContent = 'błąd zapisu: ' + e.message;
   }
 };
+
+// Delegacja focusa na #rows: podczas pisania w formularzu ustawień bota
+// wstrzymaj polling (inaczej re-render co 3 s skasuje focus), wznów na blurze.
+// focusout sprawdza relatedTarget, żeby przejście focusa między polami
+// formularza nie restartowało refreshu w przerwie.
+$('rows').addEventListener('focusin', (e) => {
+  if (e.target.closest('.bot-ai-form')) stopAutoRefresh();
+});
+$('rows').addEventListener('focusout', (e) => {
+  const form = e.target.closest('.bot-ai-form');
+  if (form && (!e.relatedTarget || !form.contains(e.relatedTarget))) startAutoRefresh();
+});
 loadAiSettings();
 
 if (!getCreds()) showLogin(); // overlay na starcie

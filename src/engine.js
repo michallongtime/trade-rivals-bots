@@ -355,8 +355,10 @@ export class BotEngine {
     // a budżet walidacji = budżet bota). Ustawienia z dashboardu:
     //   - aiInstruction: instrukcja operatora doklejana do promptu systemowego,
     //   - aiAskIntervalMin: cooldown — bot pyta AI najwyżej co X minut.
-    // Ustawienia żyją na top-levelu store (state.meta) — nie w stanie bota!
-    const settings = this.store.getSettings();
+    // Efektywne = własne bota (state.bots[id].ai_settings) z fallbackiem do
+    // globalnych (state.meta.settings). nextAiAt resetowany przy zmianie
+    // własnych ustawień, więc nowe wartości obowiązują od razu.
+    const settings = this.store.getBotAiSettings(state.id);
     const instruction = settings.aiInstruction ?? '';
     const askIntervalMin = settings.aiAskIntervalMin ?? 0;
     const nowMs = Date.now();

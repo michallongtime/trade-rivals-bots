@@ -48,6 +48,17 @@ function collectBody(req) {
   });
 }
 
+// Normalizacja pól ustawień AI z body (wspólna dla globalnych i per-bot):
+// instrukcja przycięta do 4000 znaków, cooldown clamped 0–120 min + zaokrąglenie.
+function normalizeAiPatch(body) {
+  const patch = {};
+  if (typeof body.aiInstruction === 'string') patch.aiInstruction = body.aiInstruction.slice(0, 4000);
+  if (Number.isFinite(Number(body.aiAskIntervalMin))) {
+    patch.aiAskIntervalMin = Math.max(0, Math.min(120, Math.round(Number(body.aiAskIntervalMin))));
+  }
+  return patch;
+}
+
 export function createServer({ manager, store, cfg, offline, dryRun, startedAt, targetName }) {
   assertAuthConfig(cfg); // fail-closed: publiczny bind bez server.auth = odmowa startu
   const guard = createAuthGuard(cfg);
@@ -133,6 +144,19 @@ export function createServer({ manager, store, cfg, offline, dryRun, startedAt, 
         return sendJson(res, 200, await manager.deleteBot(id));
       }
 
+      // Własne ustawienia AI bota (instrukcja + cooldown). Osobny match —
+      // NIE wciągać settings do regexu akcji powyżej. Body {reset:true}
+      // przywraca dziedziczenie globalnych ustawień.
+      const settingsMatch = p.match(/^\/api\/bots\/([^/]+)\/settings$/);
+      if (m === 'POST' && settingsMatch) {
+        const id = settingsMatch[1];
+        if (!store.getAccount(id)) return sendJson(res, 404, { error: 'bot not found' });
+        const body = await collectBody(req);
+        if (body.reset === true) return sendJson(res, 200, store.resetBotAiSettings(id));
+        const patch = normalizeAiPatch(body);
+        return sendJson(res, 200, store.updateBotAiSettings(id, patch));
+      }
+
       const logMatch = p.match(/^\/api\/bots\/([^/]+)\/log$/);
       if (m === 'GET' && logMatch) {
         const s = store.getBotState(logMatch[1]);
@@ -154,12 +178,7 @@ export function createServer({ manager, store, cfg, offline, dryRun, startedAt, 
       }
       if (m === 'POST' && p === '/api/settings') {
         const body = await collectBody(req);
-        const patch = {};
-        if (typeof body.aiInstruction === 'string') patch.aiInstruction = body.aiInstruction.slice(0, 4000);
-        if (Number.isFinite(Number(body.aiAskIntervalMin))) {
-          patch.aiAskIntervalMin = Math.max(0, Math.min(120, Math.round(Number(body.aiAskIntervalMin))));
-        }
-        return sendJson(res, 200, store.updateSettings(patch));
+        return sendJson(res, 200, store.updateSettings(normalizeAiPatch(body)));
       }
 
       sendJson(res, 404, { error: 'Not found' });
